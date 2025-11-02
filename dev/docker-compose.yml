@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  floxy-pg:
+    image: postgres:17-alpine
+    container_name: floxy-pg
+    restart: always
+    environment:
+      POSTGRES_USER: floxy
+      POSTGRES_PASSWORD: password
+      POSTGRES_MULTIPLE_DATABASES: floxy
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command: -c config_file=/etc/postgresql.conf
+    volumes:
+      - "floxy_pg:/var/lib/postgresql/data/pgdata"
+      - "./postgres_initdb:/docker-entrypoint-initdb.d"
+      - "./postgresql.conf:/etc/postgresql.conf"
+    ports:
+      - "5435:5432"
+
+  floxy-ui:
+    image: rom8726/floxy-ui:latest
+    container_name: floxy-ui
+    restart: always
+    environment:
+      DB_HOST: floxy-pg
+      DB_PORT: 5432
+      DB_NAME: floxy
+      DB_USER: floxy
+      DB_PASSWORD: password
+      NODE_ENV: production
+    ports:
+      - "3001:3001"
+    depends_on:
+      - floxy-pg
+
+volumes:
+  floxy_pg:
