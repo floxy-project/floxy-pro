@@ -17,7 +17,7 @@ import (
 
 const dbSchema = "workflows"
 
-//go:embed migrations/*.sql
+//go:embed migrations_pro/*.sql
 var migrationFiles embed.FS
 
 // RunMigrations executes all migration files in order
