@@ -21,7 +21,7 @@ import (
 //
 // version: workflow version to assign to created definitions (default recommended: 1).
 func ParseWorkflowYAML(data []byte, version int) (defs map[string]*WorkflowDefinition, handlersExec map[string]string, err error) {
-	var doc yamlRoot
+	var doc YamlRoot
 	if err = yaml.Unmarshal(data, &doc); err != nil {
 		return nil, nil, fmt.Errorf("yaml parse error: %w", err)
 	}
@@ -67,22 +67,22 @@ func ParseWorkflowYAML(data []byte, version int) (defs map[string]*WorkflowDefin
 
 // --- YAML model ---
 
-type yamlRoot struct {
-	Handlers []yamlHandler `yaml:"handlers"`
+type YamlRoot struct {
+	Handlers []YamlHandler `yaml:"handlers"`
 	Flows    []yamlFlow    `yaml:"flows"`
 }
 
-type yamlHandler struct {
+type YamlHandler struct {
 	Name string `yaml:"name"`
 	Exec string `yaml:"exec"`
 }
 
 type yamlFlow struct {
 	Name  string     `yaml:"name"`
-	Steps []yamlStep `yaml:"steps"`
+	Steps []YamlStep `yaml:"steps"`
 }
 
-// yamlStep supports 3 shapes:
+// YamlStep supports 3 shapes:
 // 1) task (default):
 //    - name: step_name
 //      handler: handler_name
@@ -112,9 +112,9 @@ type yamlFlow struct {
 //   - reserve_stock  # becomes name=reserve_stock, handler=reserve_stock
 //
 // Additionally, to match the user-provided sample (which mixes scalar and mapping),
-// yamlStep.UnmarshalYAML tries to interpret a scalar as task name/handler.
+// YamlStep.UnmarshalYAML tries to interpret a scalar as task name/handler.
 
-type yamlStep struct {
+type YamlStep struct {
 	// common
 	Type string `yaml:"type"`
 	Name string `yaml:"name"`
@@ -131,15 +131,15 @@ type yamlStep struct {
 	Metadata   map[string]any `yaml:"metadata"`
 
 	// parallel
-	Tasks []yamlTask `yaml:"tasks"`
+	Tasks []YamlTask `yaml:"tasks"`
 
 	// condition
 	Expr string     `yaml:"expr"`
 	Cond string     `yaml:"condition"` // alias for expr
-	Else []yamlStep `yaml:"else"`
+	Else []YamlStep `yaml:"else"`
 }
 
-type yamlTask struct {
+type YamlTask struct {
 	Name       string         `yaml:"name"`
 	Handler    string         `yaml:"handler"`
 	MaxRetries *int           `yaml:"max_retries"`
@@ -151,7 +151,7 @@ type yamlTask struct {
 	Metadata   map[string]any `yaml:"metadata"`
 }
 
-func (s *yamlStep) UnmarshalYAML(value *yaml.Node) error {
+func (s *YamlStep) UnmarshalYAML(value *yaml.Node) error {
 	// Support scalar shorthand: "- step_name"
 	if value.Kind == yaml.ScalarNode {
 		var name string
@@ -164,12 +164,12 @@ func (s *yamlStep) UnmarshalYAML(value *yaml.Node) error {
 		return nil
 	}
 	// Otherwise decode as mapping
-	type alias yamlStep
+	type alias YamlStep
 	var a alias
 	if err := value.Decode(&a); err != nil {
 		return err
 	}
-	*s = yamlStep(a)
+	*s = YamlStep(a)
 	if s.Type == "" {
 		// default kind
 		s.Type = "task"
@@ -183,7 +183,7 @@ func (s *yamlStep) UnmarshalYAML(value *yaml.Node) error {
 
 // --- build helpers ---
 
-func buildStepsIntoBuilder(b *Builder, steps []yamlStep, handlersExec map[string]string) error {
+func buildStepsIntoBuilder(b *Builder, steps []YamlStep, handlersExec map[string]string) error {
 	for idx := range steps {
 		st := steps[idx]
 		switch st.Type {
@@ -258,7 +258,7 @@ func buildStepsIntoBuilder(b *Builder, steps []yamlStep, handlersExec map[string
 	return nil
 }
 
-func applyTaskOptions(step *StepDefinition, st yamlStep, handlersExec map[string]string) {
+func applyTaskOptions(step *StepDefinition, st YamlStep, handlersExec map[string]string) {
 	if step.Metadata == nil {
 		step.Metadata = make(map[string]any)
 	}
@@ -300,7 +300,7 @@ func applyTaskOptions(step *StepDefinition, st yamlStep, handlersExec map[string
 	}
 }
 
-func applyYamlTaskOptions(step *StepDefinition, t yamlTask, handlersExec map[string]string) {
+func applyYamlTaskOptions(step *StepDefinition, t YamlTask, handlersExec map[string]string) {
 	if step.Metadata == nil {
 		step.Metadata = make(map[string]any)
 	}
@@ -346,7 +346,7 @@ func millisecondsToDuration(ms int64) time.Duration {
 
 // Validate a minimal doc without flows
 func ValidateYAMLDocument(data []byte) error {
-	var r yamlRoot
+	var r YamlRoot
 	if err := yaml.Unmarshal(data, &r); err != nil {
 		return err
 	}
