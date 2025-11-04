@@ -1,0 +1,114 @@
+name: Build DEB Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (e.g., 1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            # Extract version from git tag (e.g., v1.0.0 -> 1.0.0)
+            VERSION=$(echo "${{ github.ref }}" | sed 's/refs\/tags\/v//')
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Build floxyctl binary
+        run: |
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-w -s" -o floxyctl ./cmd/floxyctl
+
+      - name: Create DEB package structure
+        run: |
+          PACKAGE_NAME="floxyctl"
+          PACKAGE_VERSION="${{ steps.version.outputs.version }}"
+          ARCH="amd64"
+          
+          # Create package directory structure
+          mkdir -p deb-package/DEBIAN
+          mkdir -p deb-package/usr/bin
+          
+          # Copy binary
+          cp floxyctl deb-package/usr/bin/
+          chmod +x deb-package/usr/bin/floxyctl
+          
+          # Create control file
+          cat > deb-package/DEBIAN/control << EOF
+          Package: ${PACKAGE_NAME}
+          Version: ${PACKAGE_VERSION}
+          Architecture: ${ARCH}
+          Maintainer: Roman Chudov <roman@chudov.gmail.com>
+          Description: Floxy workflow engine CLI tool
+           Floxy is a Go library for creating and executing workflows with a custom DSL.
+           Implements the Saga pattern with orchestrator approach.
+          Priority: optional
+          EOF
+          
+          # Create postinst script (optional)
+          cat > deb-package/DEBIAN/postinst << 'EOFSCRIPT'
+          #!/bin/bash
+          set -e
+          # Add any post-installation steps here
+          exit 0
+          EOFSCRIPT
+          chmod +x deb-package/DEBIAN/postinst
+          
+          # Create prerm script (optional)
+          cat > deb-package/DEBIAN/prerm << 'EOFSCRIPT'
+          #!/bin/bash
+          set -e
+          # Add any pre-removal steps here
+          exit 0
+          EOFSCRIPT
+          chmod +x deb-package/DEBIAN/prerm
+
+      - name: Build DEB package
+        run: |
+          PACKAGE_NAME="floxyctl"
+          PACKAGE_VERSION="${{ steps.version.outputs.version }}"
+          ARCH="amd64"
+          
+          dpkg-deb --build deb-package
+          mv deb-package.deb ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb
+          
+          echo "DEB package created: ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb"
+          ls -lh *.deb
+
+      - name: Upload DEB package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: floxyctl-deb-amd64
+          path: floxyctl_*.deb
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: floxyctl_*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
