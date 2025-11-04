@@ -6,6 +6,8 @@
 
 A Go library for creating and executing workflows with a custom DSL. Implements the Saga pattern with orchestrator approach, providing transaction management and compensation capabilities.
 
+Pro version of Core Floxy library.
+
 floxy means "flow" + "flux" + "tiny".
 
 <img src="docs/floxy_logo.png" width="500">
