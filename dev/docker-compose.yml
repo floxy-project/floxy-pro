@@ -3,9 +3,7 @@ version: '3.8'
 services:
   floxy-pro-pg:
     container_name: floxy-pro-pg
-    build:
-      context: ../
-      dockerfile: ./dev/Dockerfile
+    image: rom8726/postgres-partman:latest
     restart: always
     environment:
       POSTGRES_USER: floxy
