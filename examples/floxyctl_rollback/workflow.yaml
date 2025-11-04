@@ -1,0 +1,29 @@
+handlers:
+  - name: create_order
+    exec: ./scripts/create_order.sh
+  
+  - name: charge_payment
+    exec: ./scripts/charge_payment.sh
+  
+  - name: send_notification
+    exec: ./scripts/send_notification.sh
+  
+  - name: refund_payment
+    exec: ./scripts/refund_payment.sh
+  
+  - name: cancel_order
+    exec: ./scripts/cancel_order.sh
+
+flows:
+  - name: order_processing
+    steps:
+      - name: create
+        handler: create_order
+        on_failure: cancel_order
+      
+      - name: charge
+        handler: charge_payment
+        on_failure: refund_payment
+      
+      - name: notify
+        handler: send_notification

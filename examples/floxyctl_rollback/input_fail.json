@@ -1,0 +1,6 @@
+{
+  "customer_id": "CUST-001",
+  "amount": 100.50,
+  "product": "example_product",
+  "fail_charge": true
+}

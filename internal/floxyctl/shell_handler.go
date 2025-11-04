@@ -3,6 +3,7 @@ package floxyctl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,7 +47,8 @@ func (h *ShellHandler) Execute(
 	var cmd *exec.Cmd
 
 	if h.isScript {
-		cmd = exec.CommandContext(ctx, "bash", "-c", h.execPath)
+		scriptContent := "set -e\n" + h.execPath
+		cmd = exec.CommandContext(ctx, "bash", "-c", scriptContent)
 	} else {
 		if _, err := os.Stat(h.execPath); os.IsNotExist(err) {
 			return nil, fmt.Errorf("script file not found: %s", h.execPath)
@@ -83,16 +85,46 @@ func (h *ShellHandler) Execute(
 		_, _ = fmt.Fprintf(os.Stderr, "[DEBUG] Handler '%s' input: %s\n", h.name, string(input))
 	}
 
-	output, err := cmd.CombinedOutput()
+	var stdoutBuf strings.Builder
+	var stderrBuf strings.Builder
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	err := cmd.Run()
 	if err != nil {
-		return nil, fmt.Errorf("script execution failed: %w\nOutput: %s", err, string(output))
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			stderrOutput := stderrBuf.String()
+			if h.debug && stderrOutput != "" {
+				_, _ = fmt.Fprintf(os.Stderr, "[DEBUG] Handler '%s' stderr: %s\n", h.name, stderrOutput)
+			}
+			return nil, fmt.Errorf("script execution failed with exit code %d: %w\nStderr: %s", exitErr.ExitCode(), err, stderrOutput)
+		}
+		stderrOutput := stderrBuf.String()
+		stdoutOutput := stdoutBuf.String()
+		if stderrOutput != "" || stdoutOutput != "" {
+			details := ""
+			if stderrOutput != "" {
+				details += fmt.Sprintf("\nStderr: %s", stderrOutput)
+			}
+			if stdoutOutput != "" {
+				details += fmt.Sprintf("\nStdout: %s", stdoutOutput)
+			}
+			return nil, fmt.Errorf("script execution failed: %w%s", err, details)
+		}
+		return nil, fmt.Errorf("script execution failed: %w", err)
 	}
+
+	outputStr := stdoutBuf.String()
+	if len(outputStr) == 0 {
+		return nil, fmt.Errorf("script produced no output")
+	}
+
+	output := []byte(outputStr)
 
 	var result json.RawMessage
 	if err := json.Unmarshal(output, &result); err != nil {
-		result, _ = json.Marshal(map[string]string{
-			"output": strings.TrimSpace(string(output)),
-		})
+		return nil, fmt.Errorf("script output is not valid JSON: %w\nOutput: %s", err, string(output))
 	}
 
 	if h.debug {
