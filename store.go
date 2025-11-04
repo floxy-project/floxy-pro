@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/lib/pq"
 )
@@ -374,11 +375,29 @@ func (store *StoreImpl) CreateJoinState(
 ) error {
 	executor := store.getExecutor(ctx)
 
-	const query = `
+	// Check if join state already exists with row-level lock to prevent race conditions
+	const checkQuery = `
+SELECT id FROM workflows.workflow_join_state
+WHERE instance_id = $1 AND join_step_name = $2
+LIMIT 1
+FOR UPDATE SKIP LOCKED`
+
+	var existingID int64
+	err := executor.QueryRow(ctx, checkQuery, instanceID, joinStepName).Scan(&existingID)
+	if err == nil {
+		// Already exists, nothing to do
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		// Some other error occurred
+		return err
+	}
+
+	// Insert new join state
+	const insertQuery = `
 INSERT INTO workflows.workflow_join_state
     (instance_id, join_step_name, waiting_for, join_strategy, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $5)
-ON CONFLICT (instance_id, join_step_name) DO NOTHING`
+VALUES ($1, $2, $3, $4, $5, $5)`
 
 	waitingForJSON, err := json.Marshal(waitingFor)
 	if err != nil {
@@ -389,9 +408,22 @@ ON CONFLICT (instance_id, join_step_name) DO NOTHING`
 		strategy = "all"
 	}
 
-	_, err = executor.Exec(ctx, query, instanceID, joinStepName, waitingForJSON, strategy, time.Now())
+	_, err = executor.Exec(ctx, insertQuery, instanceID, joinStepName, waitingForJSON, strategy, time.Now())
+	// If we get a duplicate key error (race condition), ignore it
+	if err != nil {
+		// Check if it's a unique constraint violation (shouldn't happen with current schema, but just in case)
+		// For partitioned tables without unique constraint, we might get other errors
+		// Log the error but treat duplicate inserts as success
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// Unique constraint violation - record was inserted by another transaction
+			return nil
+		}
 
-	return err
+		return err
+	}
+
+	return nil
 }
 
 func (store *StoreImpl) UpdateJoinState(
