@@ -40,7 +40,7 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	connStringURL.RawQuery = values.Encode()
 	connString = connStringURL.String()
 
-	driver, err := iofs.New(migrationFiles, "migrations")
+	driver, err := iofs.New(migrationFiles, "migrations_pro")
 	if err != nil {
 		return fmt.Errorf("open migration files: %w", err)
 	}

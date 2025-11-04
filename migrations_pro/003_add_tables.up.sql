@@ -1,14 +1,37 @@
 BEGIN;
 
 -- ============================================================
--- workflow_queue (НЕ ПАРТИЦИОНИРОВАННАЯ)
+-- 6. workflow_human_decisions (NOT PARTITIONED)
 -- ============================================================
+
+CREATE TABLE workflows.workflow_human_decisions
+(
+    id         BIGSERIAL PRIMARY KEY,
+    instance_id BIGINT NOT NULL,
+    step_id    BIGINT NOT NULL,
+    decided_by TEXT NOT NULL,
+    decision   TEXT NOT NULL CHECK (decision IN ('confirmed','rejected')),
+    comment    TEXT,
+    decided_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+    UNIQUE (step_id, decided_by)
+);
+
+CREATE INDEX idx_workflow_human_decisions_instance_id ON workflows.workflow_human_decisions(instance_id);
+CREATE INDEX idx_workflow_human_decisions_step_id ON workflows.workflow_human_decisions(step_id);
+CREATE INDEX idx_workflow_human_decisions_created_at ON workflows.workflow_human_decisions(created_at);
+
+-- ============================================================
+-- 7. workflow_queue (NOT PARTITIONED)
+-- ============================================================
+
+DROP TABLE IF EXISTS workflows.workflow_queue CASCADE;
 
 CREATE TABLE IF NOT EXISTS workflows.workflow_queue
 (
     id           BIGSERIAL PRIMARY KEY,
     instance_id  BIGINT NOT NULL,
-    step_id      BIGINT REFERENCES workflows.workflow_steps(id) ON DELETE CASCADE,
+    step_id      BIGINT NOT NULL,
     scheduled_at TIMESTAMPTZ DEFAULT now() NOT NULL,
     attempted_at TIMESTAMPTZ,
     attempted_by TEXT,
@@ -24,8 +47,11 @@ CREATE INDEX IF NOT EXISTS idx_workflow_queue_scheduled
 CREATE INDEX IF NOT EXISTS idx_workflow_queue_instance_id
     ON workflows.workflow_queue (instance_id);
 
+CREATE INDEX IF NOT EXISTS idx_workflow_queue_step_id
+    ON workflows.workflow_queue (step_id);
+
 -- ============================================================
--- workflow_cancel_requests (НЕ ПАРТИЦИОНИРОВАННАЯ)
+-- 8. workflow_cancel_requests (NOT PARTITIONED)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS workflows.workflow_cancel_requests
@@ -42,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_cancel_requests_instance_id
     ON workflows.workflow_cancel_requests (instance_id);
 
 -- ============================================================
--- VIEWS
+-- 9. VIEWS
 -- ============================================================
 
 CREATE OR REPLACE VIEW workflows.active_workflows AS

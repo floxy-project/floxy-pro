@@ -57,6 +57,8 @@ func setupTestDatabase(t *testing.T) (testcontainers.Container, *pgxpool.Pool) {
 	err = RunMigrations(ctx, pool)
 	require.NoError(t, err)
 
+	time.Sleep(time.Second)
+
 	return postgresContainer, pool
 }
 

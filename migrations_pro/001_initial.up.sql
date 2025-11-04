@@ -24,7 +24,7 @@ COMMENT ON COLUMN workflows.workflow_definitions.definition IS 'JSONB graph with
 CREATE INDEX IF NOT EXISTS idx_workflow_definitions_name ON workflows.workflow_definitions (name);
 
 -- ============================================================
--- 1. workflow_instances (ПАРТИЦИОНИРОВАННАЯ)
+-- 1. workflow_instances (PARTITIONED)
 -- ============================================================
 
 CREATE TABLE workflows.workflow_instances
@@ -43,7 +43,6 @@ CREATE TABLE workflows.workflow_instances
 )
     PARTITION BY RANGE (created_at);
 
--- Создаем индекс на id для поиска (не уникальный, т.к. партиционированная таблица)
 CREATE INDEX idx_workflow_instances_id ON workflows.workflow_instances(id);
 
 SELECT partman.create_parent(
@@ -61,12 +60,12 @@ SET retention = '90 days',
 WHERE parent_table = 'workflows.workflow_instances';
 
 -- ============================================================
--- 2. workflow_steps (НЕ ПАРТИЦИОНИРОВАННАЯ для простоты FK)
+-- 2. workflow_steps (PARTITIONED)
 -- ============================================================
 
 CREATE TABLE workflows.workflow_steps
 (
-    id                       BIGSERIAL PRIMARY KEY,
+    id                       BIGSERIAL,
     instance_id              BIGINT NOT NULL,
     step_name                TEXT NOT NULL,
     step_type                TEXT NOT NULL CHECK (step_type IN ('task','parallel','condition','fork','join','save_point','human')),
@@ -80,17 +79,33 @@ CREATE TABLE workflows.workflow_steps
     completed_at             TIMESTAMPTZ,
     created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
     compensation_retry_count INTEGER NOT NULL DEFAULT 0,
-    idempotency_key          UUID NOT NULL DEFAULT gen_random_uuid()
-);
+    idempotency_key          UUID NOT NULL DEFAULT gen_random_uuid(),
+    PRIMARY KEY (id, created_at)
+)
+    PARTITION BY RANGE (created_at);
 
--- Индексы для производительности
-CREATE INDEX idx_workflow_steps_instance_id ON workflows.workflow_steps(instance_id);
-CREATE INDEX idx_workflow_steps_created_at ON workflows.workflow_steps(created_at);
-CREATE INDEX idx_workflow_steps_status ON workflows.workflow_steps(status);
-CREATE INDEX idx_workflow_steps_step_name ON workflows.workflow_steps(step_name);
+CREATE INDEX idx_workflow_steps_id ON workflows.workflow_steps (id);
+CREATE INDEX idx_workflow_steps_instance_id ON workflows.workflow_steps (instance_id);
+CREATE INDEX idx_workflow_steps_status ON workflows.workflow_steps (status);
+CREATE INDEX idx_workflow_steps_step_name ON workflows.workflow_steps (step_name);
+CREATE INDEX idx_workflow_steps_created_at ON workflows.workflow_steps (created_at);
+
+SELECT partman.create_parent(
+               p_parent_table => 'workflows.workflow_steps',
+               p_control => 'created_at',
+               p_interval => '1 day',
+               p_premake => 30
+       );
+
+UPDATE partman.part_config
+SET retention = '90 days',
+    retention_keep_table = false,
+    retention_keep_index = false,
+    infinite_time_partitions = true
+WHERE parent_table = 'workflows.workflow_steps';
 
 -- ============================================================
--- 3. workflow_events (ПАРТИЦИОНИРОВАННАЯ)
+-- 3. workflow_events (PARTITIONED)
 -- ============================================================
 
 CREATE TABLE workflows.workflow_events
@@ -123,7 +138,7 @@ SET retention = '90 days',
 WHERE parent_table = 'workflows.workflow_events';
 
 -- ============================================================
--- 4. workflow_dlq (ПАРТИЦИОНИРОВАННАЯ)
+-- 4. workflow_dlq (PARTITIONED)
 -- ============================================================
 
 CREATE TABLE workflows.workflow_dlq
@@ -160,33 +175,14 @@ SET retention = '90 days',
 WHERE parent_table = 'workflows.workflow_dlq';
 
 -- ============================================================
--- 5. workflow_human_decisions (НЕ ПАРТИЦИОНИРОВАННАЯ)
+-- 5. workflow_join_state (PARTITIONED)
 -- ============================================================
 
-CREATE TABLE workflows.workflow_human_decisions
-(
-    id         BIGSERIAL PRIMARY KEY,
-    instance_id BIGINT NOT NULL,
-    step_id    BIGINT NOT NULL,
-    decided_by TEXT NOT NULL,
-    decision   TEXT NOT NULL CHECK (decision IN ('confirmed','rejected')),
-    comment    TEXT,
-    decided_at TIMESTAMPTZ DEFAULT now() NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
-    UNIQUE (step_id, decided_by)
-);
-
-CREATE INDEX idx_workflow_human_decisions_instance_id ON workflows.workflow_human_decisions(instance_id);
-CREATE INDEX idx_workflow_human_decisions_step_id ON workflows.workflow_human_decisions(step_id);
-CREATE INDEX idx_workflow_human_decisions_created_at ON workflows.workflow_human_decisions(created_at);
-
--- ============================================================
--- 6. workflow_join_state (НЕ ПАРТИЦИОНИРОВАННАЯ)
--- ============================================================
+DROP TABLE IF EXISTS workflows.workflow_join_state CASCADE;
 
 CREATE TABLE workflows.workflow_join_state
 (
-    id             BIGSERIAL PRIMARY KEY,
+    id             BIGSERIAL,
     instance_id    BIGINT NOT NULL,
     join_step_name TEXT NOT NULL,
     waiting_for    JSONB NOT NULL,
@@ -196,10 +192,31 @@ CREATE TABLE workflows.workflow_join_state
     is_ready       BOOLEAN DEFAULT false NOT NULL,
     created_at     TIMESTAMPTZ DEFAULT now() NOT NULL,
     updated_at     TIMESTAMPTZ DEFAULT now() NOT NULL,
-    UNIQUE (instance_id, join_step_name)
+    PRIMARY KEY (id, created_at)
+)
+    PARTITION BY RANGE (created_at);
+
+COMMENT ON TABLE workflows.workflow_join_state IS 'Join synchronization state for parallel branches';
+
+CREATE INDEX idx_workflow_join_state_instance_id
+    ON workflows.workflow_join_state (instance_id);
+CREATE INDEX idx_workflow_join_state_join_name
+    ON workflows.workflow_join_state (join_step_name);
+CREATE INDEX idx_workflow_join_state_created_at
+    ON workflows.workflow_join_state (created_at);
+
+SELECT partman.create_parent(
+    p_parent_table => 'workflows.workflow_join_state',
+    p_control => 'created_at',
+    p_interval => '1 day',
+    p_premake => 30
 );
 
-CREATE INDEX idx_workflow_join_state_instance ON workflows.workflow_join_state(instance_id);
-CREATE INDEX idx_workflow_join_state_created_at ON workflows.workflow_join_state(created_at);
+UPDATE partman.part_config
+SET retention = '90 days',
+    retention_keep_table = false,
+    retention_keep_index = false,
+    infinite_time_partitions = true
+WHERE parent_table = 'workflows.workflow_join_state';
 
 COMMIT;

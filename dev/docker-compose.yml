@@ -19,6 +19,32 @@ services:
       - "./postgresql.conf:/etc/postgresql.conf"
     ports:
       - "5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U floxy -d floxy || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  floxy-pro-migrate:
+    container_name: floxy-pro-migrate
+    image: migrate/migrate:v4.17.0
+    depends_on:
+      floxy-pro-pg:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: floxy
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: floxy
+    volumes:
+      - "../migrations_pro:/migrations_pro"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "PostgreSQL is healthy — running migrations...";
+        migrate -path /migrations_pro -database "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@floxy-pro-pg:5432/$$POSTGRES_DB?sslmode=disable&search_path=workflows" up;
+        echo "✅ Migrations applied successfully!";
+    restart: "no"
 
   floxy-manager:
     image: rom8726/floxy-manager:latest
@@ -45,7 +71,10 @@ services:
     ports:
       - "3001:3001"
     depends_on:
-      - floxy-pro-pg
+      floxy-pro-pg:
+        condition: service_healthy
+      floxy-pro-migrate:
+        condition: service_completed_successfully
     command: ["/app/main", "server"]
 
 volumes:
