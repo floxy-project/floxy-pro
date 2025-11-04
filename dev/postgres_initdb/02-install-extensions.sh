@@ -17,7 +17,6 @@ if [ -n "$POSTGRES_MULTIPLE_DATABASES" ]; then
 	for db in $(echo $POSTGRES_MULTIPLE_DATABASES | tr ',' ' '); do
 		create_extension_in_database $db
 	done
-	echo "Multiple database installed extension"
-	show_created_user_and_database
+
 	echo "  Finish work ------------------------------------------------------------------"
 fi

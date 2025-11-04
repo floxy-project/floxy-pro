@@ -1,9 +1,11 @@
 version: '3.8'
 
 services:
-  floxy-pg:
-    image: postgres:17-alpine
-    container_name: floxy-pg
+  floxy-pro-pg:
+    container_name: floxy-pro-pg
+    build:
+      context: ../
+      dockerfile: ./dev/Dockerfile
     restart: always
     environment:
       POSTGRES_USER: floxy
@@ -12,27 +14,39 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
     command: -c config_file=/etc/postgresql.conf
     volumes:
-      - "floxy_pg:/var/lib/postgresql/data/pgdata"
+      - "floxy_pro_pg:/var/lib/postgresql/data/pgdata"
       - "./postgres_initdb:/docker-entrypoint-initdb.d"
       - "./postgresql.conf:/etc/postgresql.conf"
     ports:
       - "5435:5432"
 
-#  floxy-ui:
-#    image: rom8726/floxy-ui:latest
-#    container_name: floxy-ui
-#    restart: always
-#    environment:
-#      DB_HOST: floxy-pg
-#      DB_PORT: 5432
-#      DB_NAME: floxy
-#      DB_USER: floxy
-#      DB_PASSWORD: password
-#      NODE_ENV: production
-#    ports:
-#      - "3001:3001"
-#    depends_on:
-#      - floxy-pg
+  floxy-manager:
+    image: rom8726/floxy-manager:latest
+    container_name: floxy-manager
+    restart: always
+    environment:
+      API_SERVER_ADDR: ":3001"
+      FRONTEND_URL: "http://localhost:3001"
+      JWT_SECRET_KEY: "secret_123456789"
+      MAILER_ADDR: "smtp.example.com:465"
+      MAILER_FROM: "noreply@floxy.local"
+      MAILER_PASSWORD: "password"
+      MAILER_USER: "user"
+      POSTGRES_DATABASE: "floxy"
+      POSTGRES_HOST: "floxy-pro-pg"
+      POSTGRES_PASSWORD: "password"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "floxy"
+      SECRET_KEY: "secret_123456789"
+      TECH_SERVER_ADDR: ":8081"
+      ADMIN_EMAIL: "admin@floxy.local"
+      ADMIN_TMP_PASSWORD: "Floxy123!"
+      NODE_ENV: production
+    ports:
+      - "3001:3001"
+    depends_on:
+      - floxy-pro-pg
+    command: ["/app/main", "server"]
 
 volumes:
-  floxy_pg:
+  floxy_pro_pg:

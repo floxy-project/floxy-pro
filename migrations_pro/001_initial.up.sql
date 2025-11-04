@@ -2,283 +2,204 @@ BEGIN;
 
 CREATE SCHEMA IF NOT EXISTS workflows;
 CREATE SCHEMA IF NOT EXISTS partman;
-CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+CREATE EXTENSION IF NOT EXISTS pg_partman WITH SCHEMA partman;
 
 -- ============================================================
 -- 0. not partitioned tables
 -- ============================================================
 
-create table if not exists workflows.workflow_definitions
+CREATE TABLE IF NOT EXISTS workflows.workflow_definitions
 (
-    id         text                                   not null
-        primary key,
-    name       text                                   not null,
-    version    integer                                not null,
-    definition jsonb                                  not null,
-    created_at timestamp with time zone default now() not null,
-    unique (name, version)
+    id         TEXT                     NOT NULL PRIMARY KEY,
+    name       TEXT                     NOT NULL,
+    version    INTEGER                  NOT NULL,
+    definition JSONB                    NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+    UNIQUE (name, version)
 );
 
-comment on table workflows.workflow_definitions is 'Workflow templates with definition of the execution graph';
-comment on column workflows.workflow_definitions.definition is 'JSONB graph with adjacency list structure';
+COMMENT ON TABLE workflows.workflow_definitions IS 'Workflow templates with definition of the execution graph';
+COMMENT ON COLUMN workflows.workflow_definitions.definition IS 'JSONB graph with adjacency list structure';
 
-create index if not exists idx_workflow_definitions_name on workflows.workflow_definitions (name);
-
----
-
-create table if not exists workflows.workflow_queue
-(
-    id           bigserial
-        primary key,
-    instance_id  bigint                                 not null
-        references workflows.workflow_instances
-            on delete cascade,
-    step_id      bigint
-        references workflows.workflow_steps
-            on delete cascade,
-    scheduled_at timestamp with time zone default now() not null,
-    attempted_at timestamp with time zone,
-    attempted_by text,
-    priority     integer                  default 0     not null
-);
-
-comment on table workflows.workflow_queue is 'Queue of steps for workers to complete';
-
-create index if not exists idx_workflow_queue_scheduled
-    on workflows.workflow_queue (scheduled_at asc, priority desc)
-    where (attempted_at IS NULL);
-
-create index if not exists idx_workflow_queue_instance_id on workflows.workflow_queue (instance_id);
-
----
-
-create table if not exists workflows.workflow_cancel_requests
-(
-    id           bigserial
-        primary key,
-    instance_id  bigint                                 not null
-        unique
-        references workflows.workflow_instances
-            on delete cascade,
-    requested_by text                                   not null,
-    cancel_type  text                                   not null
-        constraint workflow_cancel_requests_type_check
-            check (cancel_type = ANY (ARRAY ['cancel'::text, 'abort'::text])),
-    reason       text,
-    created_at   timestamp with time zone default now() not null
-);
-
-create index if not exists idx_workflow_cancel_requests_instance_id on workflows.workflow_cancel_requests (instance_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_definitions_name ON workflows.workflow_definitions (name);
 
 -- ============================================================
--- 1. workflow_instances
+-- 1. workflow_instances (ПАРТИЦИОНИРОВАННАЯ)
 -- ============================================================
 
 CREATE TABLE workflows.workflow_instances
 (
-    id           bigserial PRIMARY KEY,
-    workflow_id  text NOT NULL REFERENCES workflows.workflow_definitions(id),
-    status       text NOT NULL CHECK (status IN ('pending','running','completed','failed','rolling_back','cancelled','cancelling','aborted','dlq')),
-    input        jsonb,
-    output       jsonb,
-    error        text,
-    started_at   timestamptz,
-    completed_at timestamptz,
-    created_at   timestamptz NOT NULL DEFAULT now(),
-    updated_at   timestamptz NOT NULL DEFAULT now()
+    id           BIGSERIAL,
+    workflow_id  TEXT NOT NULL REFERENCES workflows.workflow_definitions(id),
+    status       TEXT NOT NULL CHECK (status IN ('pending','running','completed','failed','rolling_back','cancelled','cancelling','aborted','dlq')),
+    input        JSONB,
+    output       JSONB,
+    error        TEXT,
+    started_at   TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (id, created_at)
 )
     PARTITION BY RANGE (created_at);
+
+-- Создаем индекс на id для поиска (не уникальный, т.к. партиционированная таблица)
+CREATE INDEX idx_workflow_instances_id ON workflows.workflow_instances(id);
 
 SELECT partman.create_parent(
                p_parent_table => 'workflows.workflow_instances',
                p_control => 'created_at',
-               p_type => 'native',
-               p_interval => 'monthly',
-               p_premake => 1,
-               p_retention := 12,
-               p_retention_keep_table := true
+               p_interval => '1 day',
+               p_premake => 30
        );
 
+UPDATE partman.part_config
+SET retention = '90 days',
+    retention_keep_table = false,
+    retention_keep_index = false,
+    infinite_time_partitions = true
+WHERE parent_table = 'workflows.workflow_instances';
+
 -- ============================================================
--- 2. workflow_steps
+-- 2. workflow_steps (НЕ ПАРТИЦИОНИРОВАННАЯ для простоты FK)
 -- ============================================================
 
 CREATE TABLE workflows.workflow_steps
 (
-    id bigserial PRIMARY KEY,
-    instance_id bigint NOT NULL,
-    step_name text NOT NULL,
-    step_type text NOT NULL CHECK (step_type IN ('task','parallel','condition','fork','join','save_point','human')),
-    status text NOT NULL CHECK (status IN ('pending','running','completed','failed','skipped','compensation','rolled_back','waiting_decision','confirmed','rejected','paused')),
-    input jsonb,
-    output jsonb,
-    error text,
-    retry_count integer NOT NULL DEFAULT 0,
-    max_retries integer NOT NULL DEFAULT 3,
-    started_at timestamptz,
-    completed_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    compensation_retry_count integer NOT NULL DEFAULT 0,
-    idempotency_key uuid NOT NULL DEFAULT gen_random_uuid()
-)
-    PARTITION BY RANGE (created_at);
+    id                       BIGSERIAL PRIMARY KEY,
+    instance_id              BIGINT NOT NULL,
+    step_name                TEXT NOT NULL,
+    step_type                TEXT NOT NULL CHECK (step_type IN ('task','parallel','condition','fork','join','save_point','human')),
+    status                   TEXT NOT NULL CHECK (status IN ('pending','running','completed','failed','skipped','compensation','rolled_back','waiting_decision','confirmed','rejected','paused')),
+    input                    JSONB,
+    output                   JSONB,
+    error                    TEXT,
+    retry_count              INTEGER NOT NULL DEFAULT 0,
+    max_retries              INTEGER NOT NULL DEFAULT 3,
+    started_at               TIMESTAMPTZ,
+    completed_at             TIMESTAMPTZ,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    compensation_retry_count INTEGER NOT NULL DEFAULT 0,
+    idempotency_key          UUID NOT NULL DEFAULT gen_random_uuid()
+);
 
-SELECT partman.create_parent(
-               p_parent_table => 'workflows.workflow_steps',
-               p_control => 'created_at',
-               p_type => 'native',
-               p_interval => 'monthly',
-               p_premake => 1,
-               p_retention := 12,
-               p_retention_keep_table := true
-       );
+-- Индексы для производительности
+CREATE INDEX idx_workflow_steps_instance_id ON workflows.workflow_steps(instance_id);
+CREATE INDEX idx_workflow_steps_created_at ON workflows.workflow_steps(created_at);
+CREATE INDEX idx_workflow_steps_status ON workflows.workflow_steps(status);
+CREATE INDEX idx_workflow_steps_step_name ON workflows.workflow_steps(step_name);
 
 -- ============================================================
--- 3. workflow_events
+-- 3. workflow_events (ПАРТИЦИОНИРОВАННАЯ)
 -- ============================================================
 
 CREATE TABLE workflows.workflow_events
 (
-    id bigserial PRIMARY KEY,
-    instance_id bigint NOT NULL,
-    step_id bigint,
-    event_type text NOT NULL,
-    payload jsonb,
-    created_at timestamptz NOT NULL DEFAULT now()
+    id          BIGSERIAL,
+    instance_id BIGINT NOT NULL,
+    step_id     BIGINT,
+    event_type  TEXT NOT NULL,
+    payload     JSONB,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (id, created_at)
 )
     PARTITION BY RANGE (created_at);
+
+CREATE INDEX idx_workflow_events_id ON workflows.workflow_events(id);
+CREATE INDEX idx_workflow_events_instance_id ON workflows.workflow_events(instance_id);
 
 SELECT partman.create_parent(
                p_parent_table => 'workflows.workflow_events',
                p_control => 'created_at',
-               p_type => 'native',
-               p_interval => 'monthly',
-               p_premake => 1,
-               p_retention := 6,
-               p_retention_keep_table := true
+               p_interval => '1 day',
+               p_premake => 30
        );
 
+UPDATE partman.part_config
+SET retention = '90 days',
+    retention_keep_table = false,
+    retention_keep_index = false,
+    infinite_time_partitions = true
+WHERE parent_table = 'workflows.workflow_events';
+
 -- ============================================================
--- 4. workflow_dlq
+-- 4. workflow_dlq (ПАРТИЦИОНИРОВАННАЯ)
 -- ============================================================
 
 CREATE TABLE workflows.workflow_dlq
 (
-    id bigserial PRIMARY KEY,
-    instance_id bigint NOT NULL,
-    workflow_id text NOT NULL,
-    step_id bigint NOT NULL,
-    step_name text NOT NULL,
-    step_type text NOT NULL,
-    input jsonb,
-    error text,
-    reason text,
-    created_at timestamptz DEFAULT now() NOT NULL
+    id          BIGSERIAL,
+    instance_id BIGINT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    step_id     BIGINT NOT NULL,
+    step_name   TEXT NOT NULL,
+    step_type   TEXT NOT NULL,
+    input       JSONB,
+    error       TEXT,
+    reason      TEXT,
+    created_at  TIMESTAMPTZ DEFAULT now() NOT NULL,
+    PRIMARY KEY (id, created_at)
 )
     PARTITION BY RANGE (created_at);
+
+CREATE INDEX idx_workflow_dlq_id ON workflows.workflow_dlq(id);
+CREATE INDEX idx_workflow_dlq_instance_id ON workflows.workflow_dlq(instance_id);
 
 SELECT partman.create_parent(
                p_parent_table => 'workflows.workflow_dlq',
                p_control => 'created_at',
-               p_type => 'native',
-               p_interval => 'monthly',
-               p_premake => 1,
-               p_retention := 3,
-               p_retention_keep_table := true
+               p_interval => '1 day',
+               p_premake => 30
        );
 
+UPDATE partman.part_config
+SET retention = '90 days',
+    retention_keep_table = false,
+    retention_keep_index = false,
+    infinite_time_partitions = true
+WHERE parent_table = 'workflows.workflow_dlq';
+
 -- ============================================================
--- 5. workflow_human_decisions
+-- 5. workflow_human_decisions (НЕ ПАРТИЦИОНИРОВАННАЯ)
 -- ============================================================
 
 CREATE TABLE workflows.workflow_human_decisions
 (
-    id bigserial PRIMARY KEY,
-    instance_id bigint NOT NULL,
-    step_id bigint NOT NULL,
-    decided_by text NOT NULL,
-    decision text NOT NULL CHECK (decision IN ('confirmed','rejected')),
-    comment text,
-    decided_at timestamptz DEFAULT now() NOT NULL,
-    created_at timestamptz DEFAULT now() NOT NULL,
+    id         BIGSERIAL PRIMARY KEY,
+    instance_id BIGINT NOT NULL,
+    step_id    BIGINT NOT NULL,
+    decided_by TEXT NOT NULL,
+    decision   TEXT NOT NULL CHECK (decision IN ('confirmed','rejected')),
+    comment    TEXT,
+    decided_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
     UNIQUE (step_id, decided_by)
-)
-    PARTITION BY RANGE (created_at);
+);
 
-SELECT partman.create_parent(
-               p_parent_table => 'workflows.workflow_human_decisions',
-               p_control => 'created_at',
-               p_type => 'native',
-               p_interval => 'monthly',
-               p_premake => 1,
-               p_retention := 12,
-               p_retention_keep_table := true
-       );
+CREATE INDEX idx_workflow_human_decisions_instance_id ON workflows.workflow_human_decisions(instance_id);
+CREATE INDEX idx_workflow_human_decisions_step_id ON workflows.workflow_human_decisions(step_id);
+CREATE INDEX idx_workflow_human_decisions_created_at ON workflows.workflow_human_decisions(created_at);
 
 -- ============================================================
--- 6. workflow_join_state
+-- 6. workflow_join_state (НЕ ПАРТИЦИОНИРОВАННАЯ)
 -- ============================================================
 
 CREATE TABLE workflows.workflow_join_state
 (
-    id bigserial PRIMARY KEY,
-    instance_id bigint NOT NULL,
-    join_step_name text NOT NULL,
-    waiting_for jsonb NOT NULL,
-    completed jsonb DEFAULT '[]'::jsonb NOT NULL,
-    failed jsonb DEFAULT '[]'::jsonb NOT NULL,
-    join_strategy text DEFAULT 'all' NOT NULL,
-    is_ready boolean DEFAULT false NOT NULL,
-    created_at timestamptz DEFAULT now() NOT NULL,
-    updated_at timestamptz DEFAULT now() NOT NULL,
+    id             BIGSERIAL PRIMARY KEY,
+    instance_id    BIGINT NOT NULL,
+    join_step_name TEXT NOT NULL,
+    waiting_for    JSONB NOT NULL,
+    completed      JSONB DEFAULT '[]'::jsonb NOT NULL,
+    failed         JSONB DEFAULT '[]'::jsonb NOT NULL,
+    join_strategy  TEXT DEFAULT 'all' NOT NULL,
+    is_ready       BOOLEAN DEFAULT false NOT NULL,
+    created_at     TIMESTAMPTZ DEFAULT now() NOT NULL,
+    updated_at     TIMESTAMPTZ DEFAULT now() NOT NULL,
     UNIQUE (instance_id, join_step_name)
-)
-    PARTITION BY RANGE (created_at);
+);
 
-SELECT partman.create_parent(
-               p_parent_table => 'workflows.workflow_join_state',
-               p_control => 'created_at',
-               p_type => 'native',
-               p_interval => 'monthly',
-               p_premake => 1,
-               p_retention := 12,
-               p_retention_keep_table := true
-       );
-
----
-
-create or replace view active_workflows
-            (id, workflow_id, status, created_at, updated_at, duration_seconds, total_steps, completed_steps,
-             failed_steps, running_steps)
-as
-SELECT wi.id,
-       wi.workflow_id,
-       wi.status,
-       wi.created_at,
-       wi.updated_at,
-       EXTRACT(epoch FROM now() - wi.created_at)                 AS duration_seconds,
-       count(ws.id)                                              AS total_steps,
-       count(ws.id) FILTER (WHERE ws.status = 'completed'::text) AS completed_steps,
-       count(ws.id) FILTER (WHERE ws.status = 'failed'::text)    AS failed_steps,
-       count(ws.id) FILTER (WHERE ws.status = 'running'::text)   AS running_steps
-FROM workflows.workflow_instances wi
-         LEFT JOIN workflows.workflow_steps ws ON wi.id = ws.instance_id
-WHERE wi.status = ANY (ARRAY ['pending'::text, 'running'::text, 'dlq'::text])
-GROUP BY wi.id, wi.workflow_id, wi.status, wi.created_at, wi.updated_at;
-
----
-
-create or replace view workflow_stats (name, version, total_instances, completed, failed, running, avg_duration_seconds) as
-SELECT wd.name,
-       wd.version,
-       count(wi.id)                                                                                          AS total_instances,
-       count(wi.id) FILTER (WHERE wi.status = 'completed'::text)                                             AS completed,
-       count(wi.id) FILTER (WHERE wi.status = 'failed'::text)                                                AS failed,
-       count(wi.id) FILTER (WHERE wi.status = 'running'::text)                                               AS running,
-       avg(EXTRACT(epoch FROM wi.completed_at - wi.created_at))
-       FILTER (WHERE wi.status = 'completed'::text)                                                          AS avg_duration_seconds
-FROM workflows.workflow_definitions wd
-         LEFT JOIN workflows.workflow_instances wi ON wd.id = wi.workflow_id
-GROUP BY wd.name, wd.version;
+CREATE INDEX idx_workflow_join_state_instance ON workflows.workflow_join_state(instance_id);
+CREATE INDEX idx_workflow_join_state_created_at ON workflows.workflow_join_state(created_at);
 
 COMMIT;
