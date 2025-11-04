@@ -1,0 +1,21 @@
+handlers:
+  - name: transform_data
+    exec: ./scripts/transform.sh
+  
+  - name: filter_data
+    exec: ./scripts/filter.sh
+  
+  - name: aggregate_data
+    exec: ./scripts/aggregate.sh
+
+flows:
+  - name: data_pipeline
+    steps:
+      - name: transform
+        handler: transform_data
+      
+      - name: filter
+        handler: filter_data
+      
+      - name: aggregate
+        handler: aggregate_data

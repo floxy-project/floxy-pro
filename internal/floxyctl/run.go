@@ -16,6 +16,7 @@ type Config struct {
 	WorkerInterval      time.Duration
 	CompletionTimeout   time.Duration
 	StatusCheckInterval time.Duration
+	Debug               bool
 }
 
 func RunWorkflow(ctx context.Context, yamlFile, inputFile string, config Config) error {
@@ -81,7 +82,7 @@ func RunWorkflow(ctx context.Context, yamlFile, inputFile string, config Config)
 	defer engine.Shutdown()
 
 	for handlerName, exec := range handlersExec {
-		handler := NewShellHandler(handlerName, exec)
+		handler := NewShellHandler(handlerName, exec, config.Debug)
 		engine.RegisterHandler(handler)
 	}
 
@@ -149,7 +150,12 @@ func RunWorkflow(ctx context.Context, yamlFile, inputFile string, config Config)
 	return nil
 }
 
-func waitForCompletion(ctx context.Context, engine *floxy.Engine, instanceID int64, timeout, checkInterval time.Duration) (floxy.WorkflowStatus, error) {
+func waitForCompletion(
+	ctx context.Context,
+	engine *floxy.Engine,
+	instanceID int64,
+	timeout, checkInterval time.Duration,
+) (floxy.WorkflowStatus, error) {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()

@@ -15,9 +15,10 @@ type ShellHandler struct {
 	name     string
 	execPath string
 	isScript bool
+	debug    bool
 }
 
-func NewShellHandler(name, exec string) *ShellHandler {
+func NewShellHandler(name, exec string, debug bool) *ShellHandler {
 	isScript := false
 	if strings.Contains(exec, "\n") {
 		if _, err := os.Stat(exec); os.IsNotExist(err) {
@@ -29,6 +30,7 @@ func NewShellHandler(name, exec string) *ShellHandler {
 		name:     name,
 		execPath: exec,
 		isScript: isScript,
+		debug:    debug,
 	}
 }
 
@@ -36,7 +38,11 @@ func (h *ShellHandler) Name() string {
 	return h.name
 }
 
-func (h *ShellHandler) Execute(ctx context.Context, stepCtx floxy.StepContext, input json.RawMessage) (json.RawMessage, error) {
+func (h *ShellHandler) Execute(
+	ctx context.Context,
+	stepCtx floxy.StepContext,
+	input json.RawMessage,
+) (json.RawMessage, error) {
 	var cmd *exec.Cmd
 
 	if h.isScript {
@@ -68,9 +74,14 @@ func (h *ShellHandler) Execute(ctx context.Context, stepCtx floxy.StepContext, i
 		fmt.Sprintf("FLOXY_STEP_NAME=%s", stepCtx.StepName()),
 		fmt.Sprintf("FLOXY_IDEMPOTENCY_KEY=%s", stepCtx.IdempotencyKey()),
 		fmt.Sprintf("FLOXY_RETRY_COUNT=%d", stepCtx.RetryCount()),
+		fmt.Sprintf("FLOXY_DEBUG=%t", h.debug),
 	)
 
 	cmd.Env = append(cmd.Env, os.Environ()...)
+
+	if h.debug {
+		_, _ = fmt.Fprintf(os.Stderr, "[DEBUG] Handler '%s' input: %s\n", h.name, string(input))
+	}
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -82,6 +93,10 @@ func (h *ShellHandler) Execute(ctx context.Context, stepCtx floxy.StepContext, i
 		result, _ = json.Marshal(map[string]string{
 			"output": strings.TrimSpace(string(output)),
 		})
+	}
+
+	if h.debug {
+		_, _ = fmt.Fprintf(os.Stderr, "[DEBUG] Handler '%s' output: %s\n", h.name, string(result))
 	}
 
 	return result, nil

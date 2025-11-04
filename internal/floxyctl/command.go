@@ -39,6 +39,7 @@ Examples:
 	runCmd.Flags().StringP("worker-interval", "", "100ms", "Worker pool polling interval (e.g., 100ms, 1s, 500ms)")
 	runCmd.Flags().StringP("completion-timeout", "", "10m", "Timeout for workflow completion (e.g., 10m, 30m, 1h, 5m)")
 	runCmd.Flags().StringP("status-check-interval", "", "500ms", "Interval for checking workflow status (e.g., 500ms, 1s)")
+	runCmd.Flags().BoolP("debug", "D", false, "Enable debug mode (prints handler input/output)")
 
 	if err := runCmd.MarkFlagRequired("file"); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Error marking file flag as required: %v\n", err)
@@ -93,11 +94,17 @@ func runCommand(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("invalid status-check-interval: %w", err)
 	}
 
+	debug, err := cmd.Flags().GetBool("debug")
+	if err != nil {
+		return fmt.Errorf("failed to get debug flag: %w", err)
+	}
+
 	config := Config{
 		PoolWorkers:         workers,
 		WorkerInterval:      workerInterval,
 		CompletionTimeout:   completionTimeout,
 		StatusCheckInterval: statusCheckInterval,
+		Debug:               debug,
 	}
 
 	return RunWorkflow(cmd.Context(), yamlFile, inputFile, config)
