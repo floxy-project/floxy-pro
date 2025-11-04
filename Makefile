@@ -28,3 +28,7 @@ test: ## Run all tests
 test.short: ## Run short unit tests
 	@go test -short -cover -coverprofile=coverage.out -v ./...
 	@go tool cover -html=coverage.out -o coverage.html
+
+.PHONY: floxyctl
+floxyctl: ## Build floxyctl binary
+	@go build -trimpath -o bin/floxyctl ./cmd/floxyctl
