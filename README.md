@@ -1,4 +1,4 @@
-# floxy
+# floxy-pro
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/rom8726/floxy.svg)](https://pkg.go.dev/github.com/rom8726/floxy)
 [![Go Report Card](https://goreportcard.com/badge/github.com/rom8726/floxy)](https://goreportcard.com/report/github.com/rom8726/floxy)
