@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/lib/pq"
 )
@@ -375,17 +374,28 @@ func (store *StoreImpl) CreateJoinState(
 ) error {
 	executor := store.getExecutor(ctx)
 
-	// Check if join state already exists with row-level lock to prevent race conditions
+	// Generate advisory lock key from instance_id and join_step_name
+	// Using hash to create a unique 64-bit integer from the combination
+	lockKey := generateAdvisoryLockKey(instanceID, joinStepName)
+
+	// Acquire advisory lock to prevent concurrent insertions
+	// pg_advisory_xact_lock blocks until the lock is available and releases it on commit/rollback
+	const lockQuery = `SELECT pg_advisory_xact_lock($1)`
+	_, err := executor.Exec(ctx, lockQuery, lockKey)
+	if err != nil {
+		return fmt.Errorf("failed to acquire advisory lock: %w", err)
+	}
+
+	// Check if join state already exists
 	const checkQuery = `
 SELECT id FROM workflows.workflow_join_state
 WHERE instance_id = $1 AND join_step_name = $2
-LIMIT 1
-FOR UPDATE SKIP LOCKED`
+LIMIT 1`
 
 	var existingID int64
-	err := executor.QueryRow(ctx, checkQuery, instanceID, joinStepName).Scan(&existingID)
+	err = executor.QueryRow(ctx, checkQuery, instanceID, joinStepName).Scan(&existingID)
 	if err == nil {
-		// Already exists, nothing to do
+		// Already exists, nothing to do (lock will be released on commit)
 		return nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -409,18 +419,8 @@ VALUES ($1, $2, $3, $4, $5, $5)`
 	}
 
 	_, err = executor.Exec(ctx, insertQuery, instanceID, joinStepName, waitingForJSON, strategy, time.Now())
-	// If we get a duplicate key error (race condition), ignore it
 	if err != nil {
-		// Check if it's a unique constraint violation (shouldn't happen with current schema, but just in case)
-		// For partitioned tables without unique constraint, we might get other errors
-		// Log the error but treat duplicate inserts as success
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			// Unique constraint violation - record was inserted by another transaction
-			return nil
-		}
-
-		return err
+		return fmt.Errorf("failed to insert join state: %w", err)
 	}
 
 	return nil
@@ -1458,4 +1458,27 @@ func checkJoinReady(waitingFor, completed, failed []string, strategy JoinStrateg
 	totalProcessed := len(completed) + len(failed)
 
 	return totalProcessed >= len(waitingFor)
+}
+
+// generateAdvisoryLockKey creates a unique 64-bit integer from instance_id and join_step_name
+// for use with PostgreSQL advisory locks. This ensures that concurrent calls to CreateJoinState
+// with the same (instance_id, join_step_name) will be serialized.
+//
+// The function uses a hash-based approach to combine instance_id and join_step_name into a single
+// 64-bit integer. PostgreSQL advisory locks accept any bigint value, so we can use the full range.
+func generateAdvisoryLockKey(instanceID int64, joinStepName string) int64 {
+	// Hash the join_step_name using FNV-1a hash algorithm
+	hash := uint64(2166136261) // FNV offset basis
+	for _, c := range joinStepName {
+		hash ^= uint64(c)
+		hash *= 16777619 // FNV prime (32-bit)
+	}
+
+	// Combine with instance_id using a prime multiplier to avoid collisions
+	// Convert to uint64 for arithmetic, then back to int64 (preserves all values)
+	instanceUint := uint64(instanceID)
+	result := instanceUint*1000000007 + hash
+
+	// PostgreSQL advisory locks work with signed bigint, so we can use the full range
+	return int64(result)
 }

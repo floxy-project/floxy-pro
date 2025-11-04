@@ -22,7 +22,7 @@ func setupTestDatabase(t *testing.T) (testcontainers.Container, *pgxpool.Pool) {
 
 	// Start PostgreSQL container
 	postgresContainer, err := postgres.Run(ctx,
-		"postgres:17-alpine",
+		"rom8726/postgres-partman:latest",
 		postgres.WithDatabase("floxy"),
 		postgres.WithUsername("user"),
 		postgres.WithPassword("password"),
