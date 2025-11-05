@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gopkg.in/yaml.v3"
 
 	"github.com/rom8726/floxy-pro"
@@ -106,7 +109,13 @@ func main() {
 
 	go printStats(statsCtx, pool)
 
+	techServerCtx, techServerCancel := context.WithCancel(ctx)
+	defer techServerCancel()
+
+	go startTechServer(techServerCtx, pool)
+
 	log.Printf("Floxyd started with %d workers", config.Workers)
+	log.Printf("Tech server started on port 8081 (metrics: http://localhost:8081/metrics, health: http://localhost:8081/health)")
 	log.Println("Press Ctrl+C to stop")
 
 	sigCh := make(chan os.Signal, 1)
@@ -118,6 +127,7 @@ func main() {
 	workerPool.Stop()
 	workerCancel()
 	statsCancel()
+	techServerCancel()
 	cancel()
 
 	log.Println("Floxyd stopped")
@@ -205,6 +215,44 @@ func printStats(ctx context.Context, pool *pgxpool.Pool) {
 			fmt.Println()
 		}
 	}
+}
+
+func startTechServer(ctx context.Context, pool *pgxpool.Pool) {
+	mux := http.NewServeMux()
+
+	// Prometheus metrics endpoint
+	mux.Handle("/metrics", promhttp.Handler())
+
+	// Health check endpoint
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		if err := pool.Ping(healthCtx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, `{"status":"unhealthy","error":"database connection failed: %v"}`, err)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"status":"healthy"}`)
+	})
+
+	server := &http.Server{
+		Addr:    ":8081",
+		Handler: mux,
+	}
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && errors.Is(err, http.ErrServerClosed) {
+			log.Printf("Tech server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	server.Shutdown(shutdownCtx)
 }
 
 func printBanner() {
