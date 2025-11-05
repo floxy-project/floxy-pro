@@ -37,12 +37,19 @@ jobs:
             # Extract version from git tag (e.g., v1.0.0 -> 1.0.0)
             VERSION=$(echo "${{ github.ref }}" | sed 's/refs\/tags\/v//')
           fi
+          # Get git version for binary (tag or commit hash)
+          GIT_VERSION=$(git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "dev")
+          GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
+          echo "git_version=$GIT_VERSION" >> $GITHUB_OUTPUT
+          echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
+          echo "Package Version: $VERSION"
+          echo "Binary Version: $GIT_VERSION, Commit: $GIT_COMMIT"
 
       - name: Build floxyctl binary
         run: |
-          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-w -s" -o floxyctl ./cmd/floxyctl
+          LDFLAGS="-w -s -X 'main.version=${{ steps.version.outputs.git_version }}' -X 'main.commit=${{ steps.version.outputs.git_commit }}'"
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o floxyctl ./cmd/floxyctl
 
       - name: Create DEB package structure
         run: |
