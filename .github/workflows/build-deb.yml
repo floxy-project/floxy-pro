@@ -133,8 +133,17 @@ jobs:
           tar czf ../control.tar.gz *
           cd ..
           
-          # Create data.tar.gz (everything except DEBIAN)
-          find . -path ./DEBIAN -prune -o -path ./debian-binary -prune -o -path ./control.tar.gz -prune -o -type f -print | sed 's|^\./||' | sort | tar czf data.tar.gz -T - --numeric-owner --owner=0 --group=0
+          # Create data.tar.gz (everything except DEBIAN and temporary files)
+          # Use tar with exclusions to preserve directory structure
+          tar czf data.tar.gz \
+            --exclude='./DEBIAN' \
+            --exclude='./debian-binary' \
+            --exclude='./control.tar.gz' \
+            --exclude='./data.tar.gz' \
+            --numeric-owner \
+            --owner=0 \
+            --group=0 \
+            usr/
           
           # Create deb package using ar
           ar r ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb debian-binary control.tar.gz data.tar.gz
