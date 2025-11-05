@@ -1,0 +1,60 @@
+handlers:
+  - name: validate_request
+    exec: ./scripts/validate_request.sh
+  
+  - name: process_data_heavy
+    exec: ./scripts/process_data_heavy.sh
+  
+  - name: process_data_light
+    exec: ./scripts/process_data_light.sh
+  
+  - name: send_email
+    exec: ./scripts/send_email.sh
+  
+  - name: send_sms
+    exec: ./scripts/send_sms.sh
+  
+  - name: update_database
+    exec: ./scripts/update_database.sh
+  
+  - name: generate_report
+    exec: ./scripts/generate_report.sh
+  
+  - name: cleanup_temp_files
+    exec: ./scripts/cleanup_temp_files.sh
+
+flows:
+  - name: data_processing_pipeline
+    steps:
+      - name: validate
+        handler: validate_request
+      
+      - type: condition
+        name: check_data_type
+        expr: "{{ eq .data_type \"heavy\" }}"
+        else:
+          - name: process_light
+            handler: process_data_light
+      
+      - type: parallel
+        name: parallel_processing
+        tasks:
+          - name: process_heavy
+            handler: process_data_heavy
+          - name: notify_email
+            handler: send_email
+          - name: notify_sms
+            handler: send_sms
+      
+      - name: update_db
+        handler: update_database
+      
+      - type: condition
+        name: check_generate_report
+        expr: "{{ eq .generate_report true }}"
+        else:
+          - name: skip_report
+            handler: cleanup_temp_files
+      
+      - name: generate
+        handler: generate_report

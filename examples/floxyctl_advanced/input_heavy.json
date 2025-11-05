@@ -1,0 +1,8 @@
+{
+  "user_id": "USER-001",
+  "data_type": "heavy",
+  "email": "user@example.com",
+  "phone": "+1234567890",
+  "generate_report": true
+}
+
