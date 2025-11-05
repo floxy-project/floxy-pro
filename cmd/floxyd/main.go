@@ -19,6 +19,8 @@ import (
 )
 
 func main() {
+	printBanner()
+
 	if len(os.Args) < 2 {
 		log.Fatal("Usage: floxyd <yaml-file>")
 	}
@@ -203,4 +205,19 @@ func printStats(ctx context.Context, pool *pgxpool.Pool) {
 			fmt.Println()
 		}
 	}
+}
+
+func printBanner() {
+	banner := `
+███████╗██╗      ██████╗ ██╗  ██╗██╗   ██╗██████╗ 
+██╔════╝██║     ██╔═══██╗╚██╗██╔╝╚██╗ ██╔╝██╔══██╗
+█████╗  ██║     ██║   ██║ ╚███╔╝  ╚████╔╝ ██║  ██║
+██╔══╝  ██║     ██║   ██║ ██╔██╗   ╚██╔╝  ██║  ██║
+██║     ███████╗╚██████╔╝██╔╝ ██╗   ██║   ██████╔╝
+╚═╝     ╚══════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═════╝ 
+                                                  
+`
+	fmt.Print(banner)
+	fmt.Println("Workflow Engine Server")
+	fmt.Println()
 }
