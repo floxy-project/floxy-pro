@@ -51,9 +51,17 @@ Examples:
 		Short: "Start workflow instance from database",
 		Long: `Start a new workflow instance from a workflow definition stored in the database.
 
+Password can be provided via:
+  - -W flag (prompts for password)
+  - PG_PASSWORD environment variable
+  - If neither is provided, empty password is used
+
 Examples:
-  # Start workflow with input file
+  # Start workflow with input file (password from prompt)
   floxyctl start -o workflow-definition-id -i input.json --host localhost --port 5432 --user user --database mydb -W
+
+  # Start workflow with password from environment variable
+  PG_PASSWORD=mypassword floxyctl start -o workflow-definition-id --host localhost --port 5432 --user user --database mydb
 
   # Start workflow with input from stdin
   echo '{"key": "value"}' | floxyctl start -o workflow-definition-id --host localhost --port 5432 --user user --database mydb -W`,
@@ -74,9 +82,17 @@ Examples:
 		Short: "Cancel workflow instance",
 		Long: `Cancel a running workflow instance with rollback.
 
+Password can be provided via:
+  - -W flag (prompts for password)
+  - PG_PASSWORD environment variable
+  - If neither is provided, empty password is used
+
 Examples:
-  # Cancel workflow instance
+  # Cancel workflow instance (password from prompt)
   floxyctl cancel -o 123 --host localhost --port 5432 --user user --database mydb -W
+
+  # Cancel with password from environment variable
+  PG_PASSWORD=mypassword floxyctl cancel -o 123 --host localhost --port 5432 --user user --database mydb
 
   # Cancel with custom reason
   floxyctl cancel -o 123 --host localhost --port 5432 --user user --database mydb -W --reason "User requested"`,
@@ -98,9 +114,17 @@ Examples:
 		Short: "Abort workflow instance",
 		Long: `Abort a running workflow instance without rollback.
 
+Password can be provided via:
+  - -W flag (prompts for password)
+  - PG_PASSWORD environment variable
+  - If neither is provided, empty password is used
+
 Examples:
-  # Abort workflow instance
+  # Abort workflow instance (password from prompt)
   floxyctl abort -o 123 --host localhost --port 5432 --user user --database mydb -W
+
+  # Abort with password from environment variable
+  PG_PASSWORD=mypassword floxyctl abort -o 123 --host localhost --port 5432 --user user --database mydb
 
   # Abort with custom reason
   floxyctl abort -o 123 --host localhost --port 5432 --user user --database mydb -W --reason "Critical error"`,
@@ -129,7 +153,7 @@ func addDBFlags(cmd *cobra.Command) {
 	cmd.Flags().String("host", "", "Database host (required)")
 	cmd.Flags().String("port", "", "Database port (required)")
 	cmd.Flags().String("user", "", "Database user (required)")
-	cmd.Flags().BoolP("password", "W", false, "Prompt for password")
+	cmd.Flags().BoolP("password", "W", false, "Prompt for password (otherwise uses PG_PASSWORD env var or empty)")
 	cmd.Flags().String("database", "", "Database name (required)")
 
 	_ = cmd.MarkFlagRequired("host")
@@ -314,6 +338,8 @@ func getDBConfig(cmd *cobra.Command) (DBConfig, error) {
 		if err != nil {
 			return DBConfig{}, err
 		}
+	} else {
+		password = os.Getenv("PG_PASSWORD")
 	}
 
 	return DBConfig{
