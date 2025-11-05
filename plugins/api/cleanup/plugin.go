@@ -1,8 +1,6 @@
 package cleanup
 
 import (
-	"encoding/json"
-	"errors"
 	"net/http"
 
 	floxy "github.com/rom8726/floxy-pro"
@@ -35,37 +33,16 @@ func HandleCleanupWorkflows(
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		var cleanupReq CleanupRequest
-		if err := json.NewDecoder(r.Body).Decode(&cleanupReq); err != nil {
-			api.WriteErrorResponse(w, err, http.StatusBadRequest)
-
-			return
-		}
-
-		// Validate days_to_keep parameter
-		if cleanupReq.DaysToKeep <= 0 {
-			err := errors.New("days_to_keep must be greater than 0")
-			api.WriteErrorResponse(w, err, http.StatusBadRequest)
-
-			return
-		}
-
 		// Call the cleanup function
-		deletedCount, err := store.CleanupOldWorkflows(ctx, cleanupReq.DaysToKeep)
+		err := store.CleanupOldWorkflows(ctx)
 		if err != nil {
 			api.WriteErrorResponse(w, err, http.StatusInternalServerError)
 
 			return
 		}
 
-		// Return the result
-		response := CleanupResponse{
-			DeletedCount: deletedCount,
-			DaysToKeep:   cleanupReq.DaysToKeep,
-		}
-
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(response)
+		_, _ = w.Write([]byte("{}"))
 	}
 }

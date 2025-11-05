@@ -1253,18 +1253,17 @@ LIMIT 1`
 	return &step, nil
 }
 
-func (store *StoreImpl) CleanupOldWorkflows(ctx context.Context, daysToKeep int) (int64, error) {
+func (store *StoreImpl) CleanupOldWorkflows(ctx context.Context) error {
 	executor := store.getExecutor(ctx)
 
-	const query = `SELECT workflows.cleanup_old_workflows($1)`
+	const query = `CALL workflows.cleanup_all();`
 
-	var deletedCount int64
-	err := executor.QueryRow(ctx, query, daysToKeep).Scan(&deletedCount)
+	_, err := executor.Exec(ctx, query)
 	if err != nil {
-		return 0, fmt.Errorf("failed to cleanup old workflows: %w", err)
+		return fmt.Errorf("failed to cleanup old partitions: %w", err)
 	}
 
-	return deletedCount, nil
+	return nil
 }
 
 func (store *StoreImpl) CreateDeadLetterRecord(

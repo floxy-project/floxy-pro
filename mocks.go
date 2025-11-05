@@ -1569,29 +1569,20 @@ func (_c *MockStore_AddToJoinWaitFor_Call) RunAndReturn(run func(ctx context.Con
 }
 
 // CleanupOldWorkflows provides a mock function for the type MockStore
-func (_mock *MockStore) CleanupOldWorkflows(ctx context.Context, daysToKeep int) (int64, error) {
-	ret := _mock.Called(ctx, daysToKeep)
+func (_mock *MockStore) CleanupOldWorkflows(ctx context.Context) error {
+	ret := _mock.Called(ctx)
 
 	if len(ret) == 0 {
 		panic("no return value specified for CleanupOldWorkflows")
 	}
 
-	var r0 int64
-	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, int) (int64, error)); ok {
-		return returnFunc(ctx, daysToKeep)
-	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, int) int64); ok {
-		r0 = returnFunc(ctx, daysToKeep)
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context) error); ok {
+		r0 = returnFunc(ctx)
 	} else {
-		r0 = ret.Get(0).(int64)
+		r0 = ret.Error(0)
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, int) error); ok {
-		r1 = returnFunc(ctx, daysToKeep)
-	} else {
-		r1 = ret.Error(1)
-	}
-	return r0, r1
+	return r0
 }
 
 // MockStore_CleanupOldWorkflows_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'CleanupOldWorkflows'
@@ -1601,35 +1592,29 @@ type MockStore_CleanupOldWorkflows_Call struct {
 
 // CleanupOldWorkflows is a helper method to define mock.On call
 //   - ctx context.Context
-//   - daysToKeep int
-func (_e *MockStore_Expecter) CleanupOldWorkflows(ctx interface{}, daysToKeep interface{}) *MockStore_CleanupOldWorkflows_Call {
-	return &MockStore_CleanupOldWorkflows_Call{Call: _e.mock.On("CleanupOldWorkflows", ctx, daysToKeep)}
+func (_e *MockStore_Expecter) CleanupOldWorkflows(ctx interface{}) *MockStore_CleanupOldWorkflows_Call {
+	return &MockStore_CleanupOldWorkflows_Call{Call: _e.mock.On("CleanupOldWorkflows", ctx)}
 }
 
-func (_c *MockStore_CleanupOldWorkflows_Call) Run(run func(ctx context.Context, daysToKeep int)) *MockStore_CleanupOldWorkflows_Call {
+func (_c *MockStore_CleanupOldWorkflows_Call) Run(run func(ctx context.Context)) *MockStore_CleanupOldWorkflows_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
 			arg0 = args[0].(context.Context)
 		}
-		var arg1 int
-		if args[1] != nil {
-			arg1 = args[1].(int)
-		}
 		run(
 			arg0,
-			arg1,
 		)
 	})
 	return _c
 }
 
-func (_c *MockStore_CleanupOldWorkflows_Call) Return(n int64, err error) *MockStore_CleanupOldWorkflows_Call {
-	_c.Call.Return(n, err)
+func (_c *MockStore_CleanupOldWorkflows_Call) Return(err error) *MockStore_CleanupOldWorkflows_Call {
+	_c.Call.Return(err)
 	return _c
 }
 
-func (_c *MockStore_CleanupOldWorkflows_Call) RunAndReturn(run func(ctx context.Context, daysToKeep int) (int64, error)) *MockStore_CleanupOldWorkflows_Call {
+func (_c *MockStore_CleanupOldWorkflows_Call) RunAndReturn(run func(ctx context.Context) error) *MockStore_CleanupOldWorkflows_Call {
 	_c.Call.Return(run)
 	return _c
 }

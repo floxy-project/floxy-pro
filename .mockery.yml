@@ -12,6 +12,6 @@ require-template-schema-exists: true
 template: testify
 template-schema: '{{.Template}}.schema.json'
 packages:
-  github.com/rom8726/floxy:
+  github.com/rom8726/floxy-pro:
     config:
       all: true

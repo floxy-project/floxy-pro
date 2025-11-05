@@ -105,5 +105,5 @@ type Store interface {
 	PauseActiveStepsAndClearQueue(ctx context.Context, instanceID int64) error
 
 	// Cleanup methods
-	CleanupOldWorkflows(ctx context.Context, daysToKeep int) (int64, error)
+	CleanupOldWorkflows(ctx context.Context) error
 }

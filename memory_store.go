@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -1080,11 +1081,11 @@ func (s *MemoryStore) PauseActiveStepsAndClearQueue(ctx context.Context, instanc
 	return nil
 }
 
-func (s *MemoryStore) CleanupOldWorkflows(ctx context.Context, daysToKeep int) (int64, error) {
+func (s *MemoryStore) CleanupOldWorkflows(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cutoffTime := time.Now().AddDate(0, 0, -daysToKeep)
+	cutoffTime := time.Now().AddDate(0, 0, -1)
 	deleted := int64(0)
 
 	for id, instance := range s.instances {
@@ -1111,7 +1112,9 @@ func (s *MemoryStore) CleanupOldWorkflows(ctx context.Context, daysToKeep int) (
 		}
 	}
 
-	return deleted, nil
+	slog.Info("Deleted old workflows", "count", deleted)
+
+	return nil
 }
 
 func (s *MemoryStore) joinStateKey(instanceID int64, joinStepName string) string {
