@@ -75,5 +75,22 @@ services:
         condition: service_completed_successfully
     command: ["/app/main", "server"]
 
+  floxyd:
+    image: rom8726/floxyd:latest
+    container_name: floxyd
+    restart: always
+    environment:
+      FLOXY_DB_NAME: "floxy"
+      FLOXY_DB_HOST: "floxy-pro-pg"
+      FLOXY_DB_PASSWORD: "password"
+      FLOXY_DB_PORT: "5432"
+      FLOXY_DB_USER: "floxy"
+    volumes:
+      - "./floxyd.yml:/app/config.yml"
+    depends_on:
+      - floxy-pro-pg
+      - floxy-pro-migrate
+    entrypoint: ["/app/floxyd", "/app/config.yml"]
+
 volumes:
   floxy_pro_pg:

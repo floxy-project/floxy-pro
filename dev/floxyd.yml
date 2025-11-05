@@ -1,0 +1,29 @@
+handlers:
+  - name: process_data
+    exec: |
+      echo "$INPUT" | jq '.value = (.value * 2) | .step = "process_data"'
+
+  - name: validate_data
+    exec: |
+      value=$(echo "$INPUT" | jq -r '.value')
+      if [ "$value" -gt 100 ]; then
+        echo "$INPUT" | jq '.valid = true | .step = "validate_data"'
+      else
+        echo "$INPUT" | jq '.valid = false | .step = "validate_data"'
+      fi
+
+  - name: finalize
+    exec: |
+      echo "$INPUT" | jq '.step = "finalize" | .completed = true'
+
+flows:
+  - name: simple_workflow
+    steps:
+      - name: process
+        handler: process_data
+
+      - name: validate
+        handler: validate_data
+
+      - name: final
+        handler: finalize

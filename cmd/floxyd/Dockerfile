@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
 # Runtime stage
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates tzdata && \
+RUN apk --no-cache add ca-certificates tzdata jq curl && \
     addgroup -S floxyd && \
     adduser -S -G floxyd floxyd
 
