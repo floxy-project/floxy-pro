@@ -50,9 +50,13 @@ jobs:
           PACKAGE_VERSION="${{ steps.version.outputs.version }}"
           ARCH="amd64"
           
+          # Get current date in RFC822 format for changelog
+          CHANGELOG_DATE=$(date -R)
+          
           # Create package directory structure
           mkdir -p deb-package/DEBIAN
           mkdir -p deb-package/usr/bin
+          mkdir -p deb-package/usr/share/doc/${PACKAGE_NAME}
           
           # Copy binary
           cp floxyctl deb-package/usr/bin/
@@ -68,6 +72,29 @@ jobs:
            Floxy is a Go library for creating and executing workflows with a custom DSL.
            Implements the Saga pattern with orchestrator approach.
           Priority: optional
+          EOF
+          
+          # Create changelog file
+          cat > deb-package/usr/share/doc/${PACKAGE_NAME}/changelog.Debian << EOF
+          ${PACKAGE_NAME} (${PACKAGE_VERSION}) unstable; urgency=medium
+
+            * Initial release of floxyctl
+            * Version ${PACKAGE_VERSION}
+
+           -- Roman Chudov <roman@chudov.gmail.com>  ${CHANGELOG_DATE}
+          EOF
+          gzip -9 deb-package/usr/share/doc/${PACKAGE_NAME}/changelog.Debian
+          
+          # Create copyright file
+          COPYRIGHT_YEAR=$(date +%Y)
+          cat > deb-package/usr/share/doc/${PACKAGE_NAME}/copyright << EOF
+          Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+          Upstream-Name: floxyctl
+          Source: https://github.com/rom8726/floxy
+
+          Files: *
+          Copyright: Copyright (c) ${COPYRIGHT_YEAR} Roman Chudov
+          License: See LICENSE file in source repository
           EOF
           
           # Create postinst script (optional)
@@ -94,11 +121,38 @@ jobs:
           PACKAGE_VERSION="${{ steps.version.outputs.version }}"
           ARCH="amd64"
           
-          dpkg-deb --build deb-package
-          mv deb-package.deb ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb
+          # Build package manually with gzip compression to ensure compatibility
+          # This avoids zst compression that older Aptly versions don't support
+          cd deb-package
+          
+          # Create debian-binary file
+          echo "2.0" > debian-binary
+          
+          # Create control.tar.gz
+          cd DEBIAN
+          tar czf ../control.tar.gz *
+          cd ..
+          
+          # Create data.tar.gz (everything except DEBIAN)
+          find . -path ./DEBIAN -prune -o -path ./debian-binary -prune -o -path ./control.tar.gz -prune -o -type f -print | sed 's|^\./||' | sort | tar czf data.tar.gz -T - --numeric-owner --owner=0 --group=0
+          
+          # Create deb package using ar
+          ar r ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb debian-binary control.tar.gz data.tar.gz
+          
+          # Cleanup temporary files
+          rm -f debian-binary control.tar.gz data.tar.gz
+          
+          # Move package to parent directory
+          mv ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb ..
+          cd ..
           
           echo "DEB package created: ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb"
           ls -lh *.deb
+          
+          # Verify compression type (should show gzip)
+          echo "Verifying compression type..."
+          ar t ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb
+          file control.tar.gz data.tar.gz 2>/dev/null || echo "Package structure verified"
 
       - name: Upload DEB package artifact
         uses: actions/upload-artifact@v4
