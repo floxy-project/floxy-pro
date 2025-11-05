@@ -9,11 +9,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func NewRootCommand() *cobra.Command {
+func NewRootCommand(version, commit string) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "floxyctl",
 		Short: "Floxy CLI tool for running workflows",
 		Long:  `floxyctl - command line tool for running and managing workflows from YAML files`,
+	}
+
+	versionCmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print version information",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("floxyctl version %s (commit: %s)\n", version, commit)
+		},
 	}
 
 	runCmd := &cobra.Command{
@@ -145,6 +153,7 @@ Examples:
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(cancelCmd)
 	rootCmd.AddCommand(abortCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	return rootCmd
 }

@@ -29,10 +29,14 @@ test.short: ## Run short unit tests
 	@go test -short -cover -coverprofile=coverage.out -v ./...
 	@go tool cover -html=coverage.out -o coverage.html
 
+VERSION := $(shell git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "dev")
+COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+LDFLAGS := -X 'main.version=$(VERSION)' -X 'main.commit=$(COMMIT)'
+
 .PHONY: floxyctl
 floxyctl: ## Build floxyctl binary
-	@go build -trimpath -o bin/floxyctl ./cmd/floxyctl
+	@go build -trimpath -ldflags "$(LDFLAGS)" -o bin/floxyctl ./cmd/floxyctl
 
 .PHONY: floxyd
 floxyd: ## Build floxyd binary
-	@go build -trimpath -o bin/floxyd ./cmd/floxyd
+	@go build -trimpath -ldflags "$(LDFLAGS)" -o bin/floxyd ./cmd/floxyd

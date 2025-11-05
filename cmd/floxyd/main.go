@@ -21,7 +21,18 @@ import (
 	"github.com/rom8726/floxy-pro/internal/handlers"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+)
+
 func main() {
+	// Проверяем команду version
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("floxyd version %s (commit: %s)\n", version, commit)
+		os.Exit(0)
+	}
+
 	printBanner()
 
 	if len(os.Args) < 2 {
@@ -267,5 +278,6 @@ func printBanner() {
 `
 	fmt.Print(banner)
 	fmt.Println("Workflow Engine Server")
+	fmt.Printf("Version: %s (commit: %s)\n", version, commit)
 	fmt.Println()
 }
