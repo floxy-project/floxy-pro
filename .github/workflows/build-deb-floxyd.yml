@@ -1,0 +1,298 @@
+name: Build DEB Package for floxyd
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (e.g., 1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            # Extract version from git tag (e.g., v1.0.0 -> 1.0.0)
+            VERSION=$(echo "${{ github.ref }}" | sed 's/refs\/tags\/v//')
+          fi
+          # Get git version for binary (tag or commit hash)
+          GIT_VERSION=$(git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "dev")
+          GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "git_version=$GIT_VERSION" >> $GITHUB_OUTPUT
+          echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
+          echo "Package Version: $VERSION"
+          echo "Binary Version: $GIT_VERSION, Commit: $GIT_COMMIT"
+
+      - name: Build floxyd binary
+        run: |
+          LDFLAGS="-w -s -X 'main.version=${{ steps.version.outputs.git_version }}' -X 'main.commit=${{ steps.version.outputs.git_commit }}'"
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o floxyd ./cmd/floxyd
+
+      - name: Create DEB package structure
+        run: |
+          PACKAGE_NAME="floxyd"
+          PACKAGE_VERSION="${{ steps.version.outputs.version }}"
+          ARCH="amd64"
+          
+          # Get current date in RFC822 format for changelog
+          CHANGELOG_DATE=$(date -R)
+          
+          # Create package directory structure
+          mkdir -p deb-package/DEBIAN
+          mkdir -p deb-package/usr/bin
+          mkdir -p deb-package/etc/floxyd
+          mkdir -p deb-package/lib/systemd/system
+          mkdir -p deb-package/etc/default
+          mkdir -p deb-package/usr/share/doc/${PACKAGE_NAME}
+          
+          # Copy binary
+          cp floxyd deb-package/usr/bin/
+          chmod +x deb-package/usr/bin/floxyd
+          
+          # Create systemd service file
+          cat > deb-package/lib/systemd/system/floxyd.service << 'EOF'
+          [Unit]
+          Description=Floxy Workflow Engine Server
+          Documentation=https://github.com/rom8726/floxy
+          After=network.target postgresql.service
+          Wants=postgresql.service
+          
+          [Service]
+          Type=simple
+          User=floxyd
+          Group=floxyd
+          EnvironmentFile=-/etc/default/floxyd
+          ExecStart=/usr/bin/floxyd /etc/floxyd/handlers.yaml
+          Restart=always
+          RestartSec=10
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier=floxyd
+          
+          # Security hardening
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=strict
+          ProtectHome=true
+          ReadWritePaths=/var/lib/floxyd
+          ProtectKernelTunables=true
+          ProtectKernelModules=true
+          ProtectControlGroups=true
+          
+          # Resource limits
+          LimitNOFILE=65536
+          LimitNPROC=4096
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          
+          # Create environment file template
+          cat > deb-package/etc/default/floxyd << 'EOF'
+          # Floxyd Configuration
+          # Database connection settings
+          FLOXY_DB_HOST=localhost
+          FLOXY_DB_PORT=5432
+          FLOXY_DB_USER=floxy
+          FLOXY_DB_PASSWORD=
+          FLOXY_DB_NAME=floxy
+          
+          # Worker configuration
+          FLOXY_WORKERS=3
+          FLOXY_WORKER_INTERVAL=100ms
+          EOF
+          
+          # Create handlers.yaml template
+          cat > deb-package/etc/floxyd/handlers.yaml << 'EOF'
+          # Floxyd Handlers Configuration
+          # Add your handlers here
+          
+          handlers: []
+          
+          flows: []
+          EOF
+          
+          # Create control file
+          cat > deb-package/DEBIAN/control << EOF
+          Package: ${PACKAGE_NAME}
+          Version: ${PACKAGE_VERSION}
+          Architecture: ${ARCH}
+          Maintainer: Roman Chudov <roman@chudov.gmail.com>
+          Depends: systemd (>= 240)
+          Description: Floxy workflow engine server daemon
+           Floxy is a Go library for creating and executing workflows with a custom DSL.
+           Implements the Saga pattern with orchestrator approach.
+           This package provides the floxyd daemon service that runs workflow workers
+           with PostgreSQL storage.
+          Priority: optional
+          EOF
+          
+          # Create changelog file
+          cat > deb-package/usr/share/doc/${PACKAGE_NAME}/changelog.Debian << EOF
+          ${PACKAGE_NAME} (${PACKAGE_VERSION}) unstable; urgency=medium
+
+            * Initial release of floxyd systemd service
+            * Version ${PACKAGE_VERSION}
+
+           -- Roman Chudov <roman@chudov.gmail.com>  ${CHANGELOG_DATE}
+          EOF
+          gzip -9 deb-package/usr/share/doc/${PACKAGE_NAME}/changelog.Debian
+          
+          # Create copyright file
+          COPYRIGHT_YEAR=$(date +%Y)
+          cat > deb-package/usr/share/doc/${PACKAGE_NAME}/copyright << EOF
+          Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+          Upstream-Name: floxyd
+          Source: https://github.com/rom8726/floxy
+
+          Files: *
+          Copyright: Copyright (c) ${COPYRIGHT_YEAR} Roman Chudov
+          License: See LICENSE file in source repository
+          EOF
+          
+          # Create postinst script
+          cat > deb-package/DEBIAN/postinst << 'EOFSCRIPT'
+          #!/bin/bash
+          set -e
+          
+          # Create floxyd user if it doesn't exist
+          if ! id -u floxyd >/dev/null 2>&1; then
+            useradd --system --home /var/lib/floxyd --shell /bin/false floxyd
+          fi
+          
+          # Create data directory
+          mkdir -p /var/lib/floxyd
+          chown floxyd:floxyd /var/lib/floxyd
+          chmod 750 /var/lib/floxyd
+          
+          # Reload systemd
+          systemctl daemon-reload
+          
+          # Enable but don't start the service (user needs to configure first)
+          systemctl enable floxyd.service || true
+          
+          echo "Floxyd service installed. Please configure /etc/default/floxyd and /etc/floxyd/handlers.yaml"
+          echo "Then start the service with: systemctl start floxyd"
+          exit 0
+          EOFSCRIPT
+          chmod +x deb-package/DEBIAN/postinst
+          
+          # Create prerm script
+          cat > deb-package/DEBIAN/prerm << 'EOFSCRIPT'
+          #!/bin/bash
+          set -e
+          
+          # Stop service before removal
+          if systemctl is-active --quiet floxyd.service; then
+            systemctl stop floxyd.service
+          fi
+          
+          # Disable service
+          systemctl disable floxyd.service || true
+          
+          exit 0
+          EOFSCRIPT
+          chmod +x deb-package/DEBIAN/prerm
+          
+          # Create postrm script
+          cat > deb-package/DEBIAN/postrm << 'EOFSCRIPT'
+          #!/bin/bash
+          set -e
+          
+          # Reload systemd after removal
+          systemctl daemon-reload || true
+          
+          exit 0
+          EOFSCRIPT
+          chmod +x deb-package/DEBIAN/postrm
+
+      - name: Build DEB package
+        run: |
+          PACKAGE_NAME="floxyd"
+          PACKAGE_VERSION="${{ steps.version.outputs.version }}"
+          ARCH="amd64"
+          
+          # Build package manually with gzip compression to ensure compatibility
+          # This avoids zst compression that older Aptly versions don't support
+          cd deb-package
+          
+          # Create debian-binary file
+          echo "2.0" > debian-binary
+          
+          # Create control.tar.gz
+          cd DEBIAN
+          tar czf ../control.tar.gz *
+          cd ..
+          
+          # Create data.tar.gz (everything except DEBIAN and temporary files)
+          # Use tar with exclusions to preserve directory structure
+          tar czf data.tar.gz \
+            --exclude='./DEBIAN' \
+            --exclude='./debian-binary' \
+            --exclude='./control.tar.gz' \
+            --exclude='./data.tar.gz' \
+            --numeric-owner \
+            --owner=0 \
+            --group=0 \
+            usr/ lib/ etc/
+          
+          # Create deb package using ar
+          ar r ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb debian-binary control.tar.gz data.tar.gz
+          
+          # Cleanup temporary files
+          rm -f debian-binary control.tar.gz data.tar.gz
+          
+          # Move package to parent directory
+          mv ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb ..
+          cd ..
+          
+          echo "DEB package created: ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb"
+          ls -lh *.deb
+          
+          # Verify compression type (should show gzip)
+          echo "Verifying compression type..."
+          ar t ${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb
+          file control.tar.gz data.tar.gz 2>/dev/null || echo "Package structure verified"
+
+      - name: Upload DEB package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: floxyd-deb-amd64
+          path: floxyd_*.deb
+          retention-days: 90
+
+      - name: Create or Update GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        uses: softprops/action-gh-release@v1
+        with:
+          files: floxyd_*.deb
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
