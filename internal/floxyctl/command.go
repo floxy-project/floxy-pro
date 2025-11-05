@@ -46,9 +46,96 @@ Examples:
 		os.Exit(1)
 	}
 
+	startCmd := &cobra.Command{
+		Use:   "start",
+		Short: "Start workflow instance from database",
+		Long: `Start a new workflow instance from a workflow definition stored in the database.
+
+Examples:
+  # Start workflow with input file
+  floxyctl start -o workflow-definition-id -i input.json --host localhost --port 5432 --user user --database mydb -W
+
+  # Start workflow with input from stdin
+  echo '{"key": "value"}' | floxyctl start -o workflow-definition-id --host localhost --port 5432 --user user --database mydb -W`,
+		RunE: startCommand,
+	}
+
+	addDBFlags(startCmd)
+	startCmd.Flags().StringP("object", "o", "", "Workflow definition ID (required)")
+	startCmd.Flags().StringP("input", "i", "", "JSON file with initial input (optional)")
+
+	if err := startCmd.MarkFlagRequired("object"); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Error marking object flag as required: %v\n", err)
+		os.Exit(1)
+	}
+
+	cancelCmd := &cobra.Command{
+		Use:   "cancel",
+		Short: "Cancel workflow instance",
+		Long: `Cancel a running workflow instance with rollback.
+
+Examples:
+  # Cancel workflow instance
+  floxyctl cancel -o 123 --host localhost --port 5432 --user user --database mydb -W
+
+  # Cancel with custom reason
+  floxyctl cancel -o 123 --host localhost --port 5432 --user user --database mydb -W --reason "User requested"`,
+		RunE: cancelCommand,
+	}
+
+	addDBFlags(cancelCmd)
+	cancelCmd.Flags().StringP("object", "o", "", "Workflow instance ID (required)")
+	cancelCmd.Flags().String("requested-by", "", "User/system requesting cancellation (default: $USER)")
+	cancelCmd.Flags().String("reason", "", "Reason for cancellation (default: 'Cancelled via floxyctl')")
+
+	if err := cancelCmd.MarkFlagRequired("object"); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Error marking object flag as required: %v\n", err)
+		os.Exit(1)
+	}
+
+	abortCmd := &cobra.Command{
+		Use:   "abort",
+		Short: "Abort workflow instance",
+		Long: `Abort a running workflow instance without rollback.
+
+Examples:
+  # Abort workflow instance
+  floxyctl abort -o 123 --host localhost --port 5432 --user user --database mydb -W
+
+  # Abort with custom reason
+  floxyctl abort -o 123 --host localhost --port 5432 --user user --database mydb -W --reason "Critical error"`,
+		RunE: abortCommand,
+	}
+
+	addDBFlags(abortCmd)
+	abortCmd.Flags().StringP("object", "o", "", "Workflow instance ID (required)")
+	abortCmd.Flags().String("requested-by", "", "User/system requesting abort (default: $USER)")
+	abortCmd.Flags().String("reason", "", "Reason for abort (default: 'Aborted via floxyctl')")
+
+	if err := abortCmd.MarkFlagRequired("object"); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Error marking object flag as required: %v\n", err)
+		os.Exit(1)
+	}
+
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(startCmd)
+	rootCmd.AddCommand(cancelCmd)
+	rootCmd.AddCommand(abortCmd)
 
 	return rootCmd
+}
+
+func addDBFlags(cmd *cobra.Command) {
+	cmd.Flags().String("host", "", "Database host (required)")
+	cmd.Flags().String("port", "", "Database port (required)")
+	cmd.Flags().String("user", "", "Database user (required)")
+	cmd.Flags().BoolP("password", "W", false, "Prompt for password")
+	cmd.Flags().String("database", "", "Database name (required)")
+
+	_ = cmd.MarkFlagRequired("host")
+	_ = cmd.MarkFlagRequired("port")
+	_ = cmd.MarkFlagRequired("user")
+	_ = cmd.MarkFlagRequired("database")
 }
 
 func runCommand(cmd *cobra.Command, _ []string) error {
@@ -108,6 +195,134 @@ func runCommand(cmd *cobra.Command, _ []string) error {
 	}
 
 	return RunWorkflow(cmd.Context(), yamlFile, inputFile, config)
+}
+
+func startCommand(cmd *cobra.Command, _ []string) error {
+	workflowID, err := cmd.Flags().GetString("object")
+	if err != nil {
+		return fmt.Errorf("failed to get object flag: %w", err)
+	}
+
+	inputFile, err := cmd.Flags().GetString("input")
+	if err != nil {
+		return fmt.Errorf("failed to get input flag: %w", err)
+	}
+
+	dbConfig, err := getDBConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	pool, err := ConnectDB(cmd.Context(), dbConfig)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	return StartWorkflow(cmd.Context(), pool, workflowID, inputFile)
+}
+
+func cancelCommand(cmd *cobra.Command, _ []string) error {
+	objectID, err := cmd.Flags().GetString("object")
+	if err != nil {
+		return fmt.Errorf("failed to get object flag: %w", err)
+	}
+
+	requestedBy, err := cmd.Flags().GetString("requested-by")
+	if err != nil {
+		return fmt.Errorf("failed to get requested-by flag: %w", err)
+	}
+
+	reason, err := cmd.Flags().GetString("reason")
+	if err != nil {
+		return fmt.Errorf("failed to get reason flag: %w", err)
+	}
+
+	dbConfig, err := getDBConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	pool, err := ConnectDB(cmd.Context(), dbConfig)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	return CancelWorkflow(cmd.Context(), pool, objectID, requestedBy, reason)
+}
+
+func abortCommand(cmd *cobra.Command, _ []string) error {
+	objectID, err := cmd.Flags().GetString("object")
+	if err != nil {
+		return fmt.Errorf("failed to get object flag: %w", err)
+	}
+
+	requestedBy, err := cmd.Flags().GetString("requested-by")
+	if err != nil {
+		return fmt.Errorf("failed to get requested-by flag: %w", err)
+	}
+
+	reason, err := cmd.Flags().GetString("reason")
+	if err != nil {
+		return fmt.Errorf("failed to get reason flag: %w", err)
+	}
+
+	dbConfig, err := getDBConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	pool, err := ConnectDB(cmd.Context(), dbConfig)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	return AbortWorkflow(cmd.Context(), pool, objectID, requestedBy, reason)
+}
+
+func getDBConfig(cmd *cobra.Command) (DBConfig, error) {
+	host, err := cmd.Flags().GetString("host")
+	if err != nil {
+		return DBConfig{}, fmt.Errorf("failed to get host flag: %w", err)
+	}
+
+	port, err := cmd.Flags().GetString("port")
+	if err != nil {
+		return DBConfig{}, fmt.Errorf("failed to get port flag: %w", err)
+	}
+
+	user, err := cmd.Flags().GetString("user")
+	if err != nil {
+		return DBConfig{}, fmt.Errorf("failed to get user flag: %w", err)
+	}
+
+	database, err := cmd.Flags().GetString("database")
+	if err != nil {
+		return DBConfig{}, fmt.Errorf("failed to get database flag: %w", err)
+	}
+
+	needPassword, err := cmd.Flags().GetBool("password")
+	if err != nil {
+		return DBConfig{}, fmt.Errorf("failed to get password flag: %w", err)
+	}
+
+	password := ""
+	if needPassword {
+		password, err = ReadPassword()
+		if err != nil {
+			return DBConfig{}, err
+		}
+	}
+
+	return DBConfig{
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Database: database,
+	}, nil
 }
 
 func parseDuration(s string) (time.Duration, error) {

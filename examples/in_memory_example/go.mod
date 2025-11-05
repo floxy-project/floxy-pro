@@ -2,10 +2,7 @@ module in_memory_example
 
 go 1.24.0
 
-require (
-	github.com/rom8726/floxy v0.0.0
-	github.com/stretchr/testify v1.11.1
-)
+require github.com/rom8726/floxy v0.0.0
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -21,6 +18,7 @@ require (
 	github.com/lib/pq v1.10.9 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
 	golang.org/x/crypto v0.39.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
