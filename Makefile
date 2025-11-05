@@ -32,3 +32,7 @@ test.short: ## Run short unit tests
 .PHONY: floxyctl
 floxyctl: ## Build floxyctl binary
 	@go build -trimpath -o bin/floxyctl ./cmd/floxyctl
+
+.PHONY: floxyd
+floxyd: ## Build floxyd binary
+	@go build -trimpath -o bin/floxyd ./cmd/floxyd

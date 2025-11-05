@@ -8,7 +8,10 @@ import (
 	"os"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/rom8726/floxy-pro"
+	"github.com/rom8726/floxy-pro/internal/handlers"
 )
 
 type Config struct {
@@ -25,9 +28,14 @@ func RunWorkflow(ctx context.Context, yamlFile, inputFile string, config Config)
 		return fmt.Errorf("failed to read YAML file: %w", err)
 	}
 
+	var yamlRoot floxy.YamlRoot
+	if err := yaml.Unmarshal(yamlData, &yamlRoot); err != nil {
+		return fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
 	defs, handlersExec, err := floxy.ParseWorkflowYAML(yamlData, 1)
 	if err != nil {
-		return fmt.Errorf("failed to parse YAML: %w", err)
+		return fmt.Errorf("failed to parse workflow YAML: %w", err)
 	}
 
 	if len(defs) == 0 {
@@ -81,8 +89,32 @@ func RunWorkflow(ctx context.Context, yamlFile, inputFile string, config Config)
 	)
 	defer engine.Shutdown()
 
+	handlerMap := make(map[string]floxy.YamlHandler)
+	for _, h := range yamlRoot.Handlers {
+		handlerMap[h.Name] = h
+	}
+
 	for handlerName, exec := range handlersExec {
-		handler := NewShellHandler(handlerName, exec, config.Debug)
+		var handlerDef floxy.YamlHandler
+		var ok bool
+		if handlerDef, ok = handlerMap[handlerName]; !ok {
+			handlerDef = floxy.YamlHandler{
+				Name: handlerName,
+				Exec: exec,
+			}
+		}
+
+		handler, err := handlers.CreateHandler(
+			handlerName,
+			exec,
+			yamlRoot.TLS,
+			handlerDef.TLS,
+			config.Debug,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create handler %q: %w", handlerName, err)
+		}
+
 		engine.RegisterHandler(handler)
 	}
 

@@ -1,4 +1,4 @@
-package floxyctl
+package handlers
 
 import (
 	"context"

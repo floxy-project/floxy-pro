@@ -68,13 +68,22 @@ func ParseWorkflowYAML(data []byte, version int) (defs map[string]*WorkflowDefin
 // --- YAML model ---
 
 type YamlRoot struct {
+	TLS      *TLSConfig    `yaml:"tls"`
 	Handlers []YamlHandler `yaml:"handlers"`
 	Flows    []yamlFlow    `yaml:"flows"`
 }
 
+type TLSConfig struct {
+	SkipVerify bool   `yaml:"skip_verify"`
+	CertFile   string `yaml:"cert_file"`
+	KeyFile    string `yaml:"key_file"`
+	CAFile     string `yaml:"ca_file"`
+}
+
 type YamlHandler struct {
-	Name string `yaml:"name"`
-	Exec string `yaml:"exec"`
+	Name string     `yaml:"name"`
+	Exec string     `yaml:"exec"`
+	TLS  *TLSConfig `yaml:"tls"`
 }
 
 type yamlFlow struct {
