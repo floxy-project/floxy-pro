@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rom8726/floxy"
+	floxy "github.com/rom8726/floxy-pro"
 )
 
 type fakeCollector struct {

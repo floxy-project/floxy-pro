@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/rom8726/floxy"
+	floxy "github.com/rom8726/floxy-pro"
 )
 
 type Server struct {

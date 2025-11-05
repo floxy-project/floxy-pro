@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/rom8726/floxy"
+	"github.com/rom8726/floxy-pro"
 )
 
 type Config struct {

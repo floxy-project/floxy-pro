@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/rom8726/floxy"
+	floxy "github.com/rom8726/floxy-pro"
 )
 
 func RegisterCoreRoutes(mux *http.ServeMux, store floxy.Store) {

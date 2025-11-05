@@ -7,7 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/rom8726/floxy"
+	floxy "github.com/rom8726/floxy-pro"
 )
 
 func TestPrometheusCollector_WorkflowMetrics(t *testing.T) {

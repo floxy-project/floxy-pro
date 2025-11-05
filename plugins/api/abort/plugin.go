@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rom8726/floxy"
-	"github.com/rom8726/floxy/api"
+	floxy "github.com/rom8726/floxy-pro"
+	"github.com/rom8726/floxy-pro/api"
 )
 
 var _ api.Plugin = (*Plugin)(nil)

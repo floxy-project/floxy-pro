@@ -112,7 +112,7 @@ import (
     "log"
     
     "github.com/jackc/pgx/v5/pgxpool"
-    "github.com/rom8726/floxy"
+	floxy "github.com/rom8726/floxy-pro"
 )
 
 func main() {

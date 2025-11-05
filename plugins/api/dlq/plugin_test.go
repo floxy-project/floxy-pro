@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rom8726/floxy"
+	floxy "github.com/rom8726/floxy-pro"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"

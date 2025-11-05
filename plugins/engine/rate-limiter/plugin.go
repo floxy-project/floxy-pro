@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rom8726/floxy"
+	floxy "github.com/rom8726/floxy-pro"
 )
 
 var _ floxy.Plugin = (*RateLimiterPlugin)(nil)

@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/rom8726/floxy"
+	"github.com/rom8726/floxy-pro"
 )
 
 type ShellHandler struct {

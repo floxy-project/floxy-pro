@@ -1,4 +1,4 @@
-module github.com/rom8726/floxy
+module github.com/rom8726/floxy-pro
 
 go 1.24.0
 
