@@ -96,9 +96,7 @@ SELECT
 	total_steps,
 	completed_steps,
 	failed_steps,
-	running_steps,
-	compensation_steps,
-	rolled_back_steps
+	running_steps
 FROM workflows.active_workflows`
 
 	rows, err := m.pool.Query(ctx, query)
