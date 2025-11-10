@@ -6,7 +6,11 @@
 
 A Go library for creating and executing workflows with a custom DSL. Implements the Saga pattern with orchestrator approach, providing transaction management and compensation capabilities.
 
-Pro version of Core Floxy library.
+**This is the Pro version of the Floxy library**, which includes advanced features for production use:
+
+- **Partitioned Tables**: Database schema redesigned with partitioned tables using PostgreSQL `pg_partman` extension for efficient management of large data volumes
+- **floxyctl**: CLI tool for running workflows with in-memory store or managing workflow instances (start/cancel/abort) stored in PostgreSQL
+- **floxyd**: Ready-to-use runtime daemon for continuous workflow processing with support for bash and HTTP handlers
 
 floxy means "flow" + "flux" + "tiny".
 
@@ -15,6 +19,10 @@ floxy means "flow" + "flux" + "tiny".
 ## Table of Contents
 
 - [Features](#features)
+- [Pro Version Features](#pro-version-features)
+  - [Partitioned Tables with pg_partman](#partitioned-tables-with-pg_partman)
+  - [floxyctl - CLI Tool](#floxyctl---cli-tool)
+  - [floxyd - Runtime Daemon](#floxyd---runtime-daemon)
 - [Ecosystem](#ecosystem)
 - [Why Floxy?](#why-floxy)
   - [1. Lightweight, Not Heavyweight](#1-lightweight-not-heavyweight)
@@ -51,6 +59,206 @@ floxy means "flow" + "flux" + "tiny".
 PlantUML diagrams of compensations flow: [DIAGRAMS](docs/SAGA_COMPENSATION_DIAGRAMS.md)
 
 Engine specification: [ENGINE](docs/ENGINE_SPEC.md)
+
+## Pro Version Features
+
+### Partitioned Tables with pg_partman
+
+The Pro version uses partitioned tables managed by PostgreSQL's `pg_partman` extension for efficient data management at scale. All high-volume tables (`workflow_instances`, `workflow_steps`, `workflow_events`, `workflow_dlq`) are partitioned by `created_at` with daily partitions.
+
+**Key benefits:**
+- **Automatic partition management**: `pg_partman` automatically creates new partitions (30 days ahead) and removes old ones (90 days retention)
+- **Improved query performance**: Queries can leverage partition pruning for faster execution
+- **Easier maintenance**: Old data can be dropped by dropping partitions instead of deleting rows
+- **Scalability**: Handles millions of workflow instances and steps efficiently
+
+**Partition configuration:**
+- Partition interval: 1 day
+- Premake: 30 partitions ahead
+- Retention: 90 days (automatic cleanup)
+- Partition key: `created_at` timestamp
+
+The partitioned schema is defined in `migrations_pro/001_initial.up.sql` and requires the `pg_partman` extension to be installed in PostgreSQL.
+
+### floxyctl - CLI Tool
+
+`floxyctl` is a command-line tool for running and managing workflows. It supports two modes of operation:
+
+#### 1. Run Mode (In-Memory Store)
+
+Execute workflows directly from YAML files using an in-memory store. Perfect for testing, development, and one-off workflow executions.
+
+**Commands:**
+- `floxyctl run -f workflow.yaml [-i input.json]` - Run workflow from YAML file
+
+**Features:**
+- Runs workflow to completion synchronously
+- Uses in-memory store (no database required)
+- Supports bash script handlers (inline or file-based)
+- Configurable worker pool and timeouts
+- Debug mode for inspecting handler input/output
+
+**Example:**
+```bash
+# Run workflow with input file
+floxyctl run -f workflow.yaml -i input.json
+
+# Run with input from stdin
+echo '{"key": "value"}' | floxyctl run -f workflow.yaml
+
+# Run with custom worker settings
+floxyctl run -f workflow.yaml -w 5 --worker-interval 50ms --completion-timeout 5m
+```
+
+#### 2. Database Mode (PostgreSQL)
+
+Manage workflow instances stored in PostgreSQL database. Requires database connection parameters.
+
+**Commands:**
+- `floxyctl start -o workflow-id [--host HOST --port PORT --user USER --database DB]` - Start new workflow instance
+- `floxyctl cancel -o instance-id [--host HOST --port PORT --user USER --database DB]` - Cancel workflow with rollback
+- `floxyctl abort -o instance-id [--host HOST --port PORT --user USER --database DB]` - Abort workflow without rollback
+
+**Features:**
+- Start workflow instances from registered workflow definitions
+- Cancel workflows with automatic rollback to root step
+- Abort workflows immediately without rollback
+- Password can be provided via `-W` flag (prompt) or `PG_PASSWORD` environment variable
+- Automatically runs database migrations on connection
+
+**Example:**
+```bash
+# Start workflow instance
+floxyctl start -o my-workflow-v1 \
+  --host localhost --port 5432 --user floxy --database floxy \
+  -i input.json -W
+
+# Cancel workflow (with rollback)
+floxyctl cancel -o 123 \
+  --host localhost --port 5432 --user floxy --database floxy \
+  --reason "User requested cancellation" -W
+
+# Abort workflow (without rollback)
+floxyctl abort -o 123 \
+  --host localhost --port 5432 --user floxy --database floxy \
+  --reason "Critical error" -W
+```
+
+**Handler Support:**
+- Bash script handlers (inline scripts or file paths)
+- HTTP endpoint handlers (automatically detected by `http://` or `https://` prefix)
+- TLS configuration for secure HTTP handlers
+- Debug mode for troubleshooting
+
+### floxyd - Runtime Daemon
+
+`floxyd` is a production-ready daemon service that continuously processes workflows stored in PostgreSQL. It's designed to run as a long-running service with multiple workers.
+
+**Key Features:**
+- **Continuous Processing**: Long-running workers poll database for pending steps
+- **YAML Configuration**: Loads handlers and workflow definitions from YAML file
+- **Multiple Handler Types**: Supports both bash scripts and HTTP endpoints
+- **TLS Support**: Configurable TLS for secure HTTP handlers (global and per-handler)
+- **Worker Pool**: Configurable number of workers and polling intervals
+- **Statistics**: Real-time workflow statistics printed every 10 seconds
+- **Tech Server**: Built-in HTTP server with Prometheus metrics and health check endpoints
+- **Graceful Shutdown**: Handles SIGINT/SIGTERM signals cleanly
+
+**Configuration:**
+
+Environment variables:
+- `FLOXY_DB_HOST` - Database host (required)
+- `FLOXY_DB_PORT` - Database port (required)
+- `FLOXY_DB_USER` - Database user (required)
+- `FLOXY_DB_PASSWORD` - Database password (optional)
+- `FLOXY_DB_NAME` - Database name (required)
+- `FLOXY_WORKERS` - Number of workers (default: 3)
+- `FLOXY_WORKER_INTERVAL` - Worker polling interval (default: "100ms")
+
+**YAML Configuration:**
+
+```yaml
+tls:
+  skip_verify: false
+  cert_file: /path/to/cert.pem
+  key_file: /path/to/key.pem
+  ca_file: /path/to/ca.pem
+
+handlers:
+  - name: bash_handler
+    exec: |
+      echo "$INPUT" | jq '.value * 2'
+  
+  - name: script_handler
+    exec: ./scripts/process.sh
+  
+  - name: http_handler
+    exec: https://api.example.com/process
+    tls:
+      skip_verify: true
+
+flows:
+  - name: my_workflow
+    steps:
+      - name: step1
+        handler: bash_handler
+      - name: step2
+        handler: http_handler
+```
+
+**Usage:**
+```bash
+# Set environment variables
+export FLOXY_DB_HOST=localhost
+export FLOXY_DB_PORT=5432
+export FLOXY_DB_USER=floxy
+export FLOXY_DB_PASSWORD=password
+export FLOXY_DB_NAME=floxy
+export FLOXY_WORKERS=5
+
+# Run floxyd
+./floxyd handlers.yaml
+```
+
+**Tech Server Endpoints:**
+- `http://localhost:8081/metrics` - Prometheus metrics
+- `http://localhost:8081/health` - Health check (checks database connection)
+
+**Workflow Registration:**
+On startup, `floxyd`:
+1. Parses YAML file for workflow definitions (`flows` section)
+2. Registers each workflow in the database (version 1 by default)
+3. Logs each registered workflow with its ID and version
+
+**Handler Types:**
+
+**Bash Handlers:**
+- Inline scripts or file paths
+- Receive JSON input via `$INPUT` environment variable
+- Input fields available as uppercase environment variables
+- Workflow context via `FLOXY_*` environment variables
+- Must output valid JSON to stdout
+
+**HTTP Handlers:**
+- Automatically detected by `http://` or `https://` prefix
+- POST requests with JSON body containing `metadata` and `data` fields
+- Custom headers: `X-Floxy-Instance-ID`, `X-Floxy-Step-Name`, `X-Floxy-Idempotency-Key`, `X-Floxy-Retry-Count`
+- TLS configuration support (client certificates, CA certificates, skip verify)
+
+**Statistics Output:**
+Every 10 seconds, `floxyd` prints:
+- Total, completed, failed, running, pending, and active workflow counts
+- Active workflow instances with details (ID, workflow name, status, current step, progress, runtime)
+
+**Differences from floxyctl:**
+
+| Feature | floxyctl | floxyd |
+|---------|----------|--------|
+| **Mode** | CLI tool | Daemon service |
+| **Storage** | In-memory (run mode) or PostgreSQL | PostgreSQL only |
+| **Execution** | Runs workflow to completion | Continuous processing |
+| **Workers** | Temporary pool | Long-running workers |
+| **Use Case** | Testing, one-off runs, management | Production workflow processing |
 
 ## Ecosystem
 
@@ -284,15 +492,22 @@ if err := floxy.RunMigrations(ctx, pool); err != nil {
 }
 ```
 
-Available migrations:
-- `001_initial.up.sql`: Initial schema creation
+### Pro Version Migrations
+
+The Pro version uses partitioned tables managed by `pg_partman`. The migrations are located in `migrations_pro/`:
+
+- `001_initial.up.sql`: Initial schema with partitioned tables (`workflow_instances`, `workflow_steps`, `workflow_events`, `workflow_dlq`) using `pg_partman`
 - `002_add_savepoint_and_rollback.up.sql`: SavePoint and rollback support
-- `003_add_compensation_retry_count.up.sql`: compensation step status and compensation_retry_count added
-- `004_add_compensation_to_views.up.sql`: active_workflows view updated
+- `003_add_compensation_retry_count.up.sql`: Compensation step status and compensation_retry_count added
+- `004_add_compensation_to_views.up.sql`: Active workflows view updated
 - `005_add_idempotency_key_to_steps.up.sql`: Idempotency Key added to step table
 - `006_add_human_in_the_loop_step.up.sql`: Human-in-the-loop step support and decision tracking
 - `007_add_workflow_cancel_requests_table.up.sql`: Cancel requests table
-- `009_add_dead_letter_queue.up.sql`: Dead Letter Queue for failed steps
+- `008_add_dead_letter_queue.up.sql`: Dead Letter Queue for failed steps
+- `009_add_dlq_and_paused_statuses.up.sql`: DLQ and paused statuses support
+- `010_add_cleanup_function.up.sql`: Cleanup function for partitioned tables
+
+**Note**: The Pro version requires the `pg_partman` extension to be installed in PostgreSQL. The extension is automatically created in the `partman` schema during migration.
 
 ## Dead Letter Queue (DLQ)
 
@@ -427,5 +642,9 @@ go get github.com/rom8726/floxy
 
 ## Dependencies
 
-- PostgreSQL database
+- PostgreSQL database (with `pg_partman` extension for Pro version)
 - Go 1.24+
+
+**Pro Version Requirements:**
+- PostgreSQL with `pg_partman` extension installed
+- The extension is automatically created during migration, but PostgreSQL must have the extension available
