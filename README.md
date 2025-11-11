@@ -265,6 +265,7 @@ Every 10 seconds, `floxyd` prints:
 ## Ecosystem
 
  - **Web UI** for visualizing and managing workflows: [Web UI](https://github.com/rom8726/floxy-ui)
+ - **Web Manager**: advanced Web UI with SSO, RBAC, etc.: [Floxy Manager](https://github.com/floxy-project/floxy-manager)
  - **GoLand Plugin**: [plugin](https://github.com/rom8726/floxy-goland-plugin)
  - **VS Code Extension**: [extension](https://github.com/rom8726/floxy-vsc-plugin)
 
