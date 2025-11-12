@@ -156,7 +156,7 @@ floxyctl abort -o 123 \
 
 ### floxyd - Runtime Daemon
 
-`floxyd` is a production-ready daemon service that continuously processes workflows stored in PostgreSQL. It's designed to run as a long-running service with multiple workers.
+`floxyd` is a daemon service that continuously processes workflows stored in PostgreSQL. It's designed to run as a long-running service with multiple workers.
 
 **Key Features:**
 - **Continuous Processing**: Long-running workers poll database for pending steps
