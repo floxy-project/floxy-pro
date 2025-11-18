@@ -58,18 +58,19 @@ func newSQLiteStore(dsn string, isInMemory bool) (*SQLiteStore, error) {
 	}
 
 	// Configure SQLite pragmas for better performance and reliability
-	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
-	_, _ = db.Exec("PRAGMA foreign_keys=ON;")
-	_, _ = db.Exec("PRAGMA busy_timeout=5000;")
-
 	if isInMemory {
 		// Single connection for in-memory databases to avoid locks
+		// Note: WAL mode is not supported for in-memory databases
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
+		_, _ = db.Exec("PRAGMA foreign_keys=ON;")
 	} else {
 		// For persistent databases, allow multiple connections for better concurrency
 		db.SetMaxOpenConns(10)
 		db.SetMaxIdleConns(5)
+		_, _ = db.Exec("PRAGMA journal_mode=WAL;")
+		_, _ = db.Exec("PRAGMA foreign_keys=ON;")
+		_, _ = db.Exec("PRAGMA busy_timeout=5000;")
 	}
 
 	store := &SQLiteStore{db: db, agingEnabled: true, agingRate: 0.5}

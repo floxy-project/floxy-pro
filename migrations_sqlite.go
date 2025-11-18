@@ -13,7 +13,8 @@ import (
 //go:embed migrations_sqlite/*.sql
 var sqliteMigrationFiles embed.FS
 
-// RunSQLiteMigrations executes embedded SQLite migrations in lexical order within a single transaction.
+// RunSQLiteMigrations executes embedded SQLite migrations in lexical order.
+// Note: SQLite DDL operations are auto-committed, so we don't use a transaction.
 func RunSQLiteMigrations(ctx context.Context, db *sql.DB) error {
 	entries, err := fs.ReadDir(sqliteMigrationFiles, "migrations_sqlite")
 	if err != nil {
@@ -25,16 +26,6 @@ func RunSQLiteMigrations(ctx context.Context, db *sql.DB) error {
 
 	// Sort by filename to ensure deterministic order (e.g., 0001_..., 0002_...)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
 	for _, e := range entries {
 		if e.IsDir() {
@@ -48,16 +39,25 @@ func RunSQLiteMigrations(ctx context.Context, db *sql.DB) error {
 		// Very simple split by semicolon; adequate for our DDL files
 		stmts := splitSQLStatements(content)
 		for _, stmt := range stmts {
-			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			if _, err := db.ExecContext(ctx, stmt); err != nil {
 				return fmt.Errorf("exec migration %s: %w", e.Name(), err)
 			}
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit migrations: %w", err)
+	// Verify that critical tables exist after migrations
+	var tableName string
+	requiredTables := []string{"workflow_definitions", "workflow_instances", "workflow_steps", "queue"}
+	for _, table := range requiredTables {
+		err := db.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&tableName)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("migration verification failed: table %s does not exist", table)
+			}
+			return fmt.Errorf("verify migration: %w", err)
+		}
 	}
-	tx = nil
+
 	return nil
 }
 
