@@ -1,8 +1,8 @@
 # floxy-pro
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rom8726/floxy.svg)](https://pkg.go.dev/github.com/rom8726/floxy)
-[![Go Report Card](https://goreportcard.com/badge/github.com/rom8726/floxy)](https://goreportcard.com/report/github.com/rom8726/floxy)
-[![Coverage Status](https://coveralls.io/repos/github/rom8726/floxy/badge.svg?branch=main)](https://coveralls.io/github/rom8726/floxy?branch=main)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rom8726/floxy-pro.svg)](https://pkg.go.dev/github.com/rom8726/floxy-pro)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rom8726/floxy-pro)](https://goreportcard.com/report/github.com/rom8726/floxy-pro)
+[![Coverage Status](https://coveralls.io/repos/github/rom8726/floxy-pro/badge.svg?branch=main)](https://coveralls.io/github/rom8726/floxy-pro?branch=main)
 
 [![boosty-cozy](https://gideonwhite1029.github.io/badges/cozy-boosty_vector.svg)](https://boosty.to/dev-tools-hacker)
 
