@@ -27,4 +27,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/rom8726/floxy-pro => ../../..
+replace github.com/rom8726/floxy-pro v0.0.0 => ../../..
