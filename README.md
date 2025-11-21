@@ -8,7 +8,7 @@
 
 A Go library for creating and executing workflows with a custom DSL. Implements the Saga pattern with orchestrator approach, providing transaction management and compensation capabilities.
 
-**This is the Pro version of the Floxy library**, which includes advanced features for production use:
+**This is the Pro version of the Floxy library**, which includes advanced features:
 
 - **Partitioned Tables**: Database schema redesigned with partitioned tables using PostgreSQL `pg_partman` extension for efficient management of large data volumes
 - **floxyctl**: CLI tool for running workflows with in-memory store or managing workflow instances (start/cancel/abort) stored in PostgreSQL
@@ -268,7 +268,6 @@ Every 10 seconds, `floxyd` prints:
 | **Storage** | In-memory (run mode) or PostgreSQL | PostgreSQL only |
 | **Execution** | Runs workflow to completion | Continuous processing |
 | **Workers** | Temporary pool | Long-running workers |
-| **Use Case** | Testing, one-off runs, management | Production workflow processing |
 
 ## Ecosystem
 
