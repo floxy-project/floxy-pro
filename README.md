@@ -16,7 +16,11 @@ A Go library for creating and executing workflows with a custom DSL. Implements 
 
 floxy means "flow" + "flux" + "tiny".
 
-> Disclaimer: This app has not been tested in production yet. By using it, you are acting at your own risk.
+### ⚠ Disclaimer
+
+Floxy is **experimental** and **not tested in production**.
+The software is provided **“as is”**, without any warranties or guarantees of stability, correctness, or fitness for any particular purpose.
+By using this project, you acknowledge that **all risks are your own**, and the authors cannot be held responsible for any damages, data loss, or failures resulting from its use.
  
 > Join the discussion if you’re experimenting with Floxy or want to help test the engine in real-world scenarios.
 
@@ -640,6 +644,10 @@ JoinStep("join", []string{"branch1_step1", "branch2_step1"}, floxy.JoinStrategyA
 **SOLVED:** Avoid using `JoinStep` with `Condition`, use `Join` instead that dynamically creates waitFor list (virtual steps conception used).
 
 See `examples/condition/main.go` for a demonstration of this issue.
+
+### Rollback for nested Fork/Join branches
+
+When using nested `Fork` branches, rollback is not supported.
 
 ## Installation
 
