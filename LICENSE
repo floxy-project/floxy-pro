@@ -1,40 +1,21 @@
-Floxy Business License (FBL)
-Version 1.1
+MIT License
 
-This license is a modified version of the Business Source License 1.1 (BSL), with no automatic license change.
+Copyright (c) 2025 Floxy
 
-Licensor: Roman Chudov (roman.chudov@gmail.com)
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-Licensed Work: "Floxy Pro" — an advanced Pro version of the Floxy library.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-Additional Use Grant:
-You may use the Licensed Work, free of charge, for development, evaluation, internal use, and operation of your own products and services, subject to the limitations below.
-
-Change License: None. This software does not automatically transition to an Open Source license.
-
----
-
-License Grant:
-The Licensor grants you a non-exclusive, worldwide, non-transferable right to use, copy, modify, and distribute the Licensed Work, **only for the Licensed Purpose** (see below), and only under the terms of this license.
-
-Licensed Purpose:
-You may use the Licensed Work in the following ways:
-- For development, testing, research, and internal business operations.
-- As part of your own products and services (including publicly available or commercial SaaS), provided that the Licensed Work is not offered as a stand-alone or competing product.
-
-You may not:
-- Offer the Licensed Work, or a modified version of it, as a stand-alone hosted, or SaaS service or similar functionality.
-- Resell, relicense, or distribute the Licensed Work as a competitive product or service.
-- Remove or alter copyright notices.
-
----
-
-Commercial Use:
-For OEM integration, SaaS offerings that directly compete with the Licensed Work, or redistribution of the Licensed Work as a service or product, you must obtain a separate commercial license. Contact roman.chudov@gmail.com for details.
-
----
-
-Limitations:
-- This license does not grant trademark rights.
-- The Licensed Work is provided "as is", without warranties or conditions of any kind.
-- Liability is limited as permitted by applicable law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
