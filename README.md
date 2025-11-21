@@ -650,7 +650,7 @@ go get github.com/rom8726/floxy
 ## Dependencies
 
 - PostgreSQL database (with `pg_partman` extension for Pro version)
-- Go 1.24+
+- Go 1.25+
 
 **Pro Version Requirements:**
 - PostgreSQL with `pg_partman` extension installed
