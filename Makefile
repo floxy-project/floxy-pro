@@ -21,7 +21,7 @@ help: ## Prints this message
 
 .PHONY: test
 test: ## Run all tests
-	@go test -cover -coverprofile=coverage.out -v ./...
+	@go test -tags=chaos -cover -coverprofile=coverage.out -v ./...
 	@go tool cover -html=coverage.out -o coverage.html
 
 .PHONY: test.sqlite
@@ -31,7 +31,7 @@ test.sqlite: ## Run all tests with SQLite storage
 
 .PHONY: test.short
 test.short: ## Run short unit tests
-	@go test -short -cover -coverprofile=coverage.out -v ./...
+	@go test -tags=chaos -short -cover -coverprofile=coverage.out -v ./...
 	@go tool cover -html=coverage.out -o coverage.html
 
 VERSION := $(shell git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "dev")
