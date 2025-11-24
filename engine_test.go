@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -173,7 +174,7 @@ func TestEngine_RegisterWorkflow_InvalidDefinition(t *testing.T) {
 					},
 				},
 			},
-			expectErr: "step step1 references unknown step: unknown-step",
+			expectErr: "step \"step1\" references unknown step: \"unknown-step\"",
 		},
 		{
 			name: "unknown on_failure step",
@@ -193,7 +194,7 @@ func TestEngine_RegisterWorkflow_InvalidDefinition(t *testing.T) {
 					},
 				},
 			},
-			expectErr: "step step1 references unknown compensation step: unknown-step",
+			expectErr: "step \"step1\" references unknown compensation step: \"unknown-step\"",
 		},
 		{
 			name: "unknown parallel step",
@@ -213,7 +214,7 @@ func TestEngine_RegisterWorkflow_InvalidDefinition(t *testing.T) {
 					},
 				},
 			},
-			expectErr: "step step1 references unknown parallel step: unknown-step",
+			expectErr: "step \"step1\" references unknown parallel step: \"unknown-step\"",
 		},
 	}
 
@@ -369,21 +370,11 @@ func TestEngine_Start_NoStartStep(t *testing.T) {
 		},
 	}
 
-	instance := &WorkflowInstance{
-		ID:         123,
-		WorkflowID: workflowID,
-		Status:     StatusPending,
-		Input:      input,
-	}
-
 	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
 		fn(ctx)
 	}).Return(errors.New("no start step defined"))
 
 	mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, workflowID).Return(definition, nil)
-	mockStore.EXPECT().CreateInstance(mock.Anything, workflowID, input).Return(instance, nil)
-	mockStore.EXPECT().LogEvent(mock.Anything, instance.ID, mock.Anything, EventWorkflowStarted, mock.Anything).Return(nil)
-	mockStore.EXPECT().UpdateInstanceStatus(mock.Anything, instance.ID, StatusRunning, mock.Anything, mock.Anything).Return(nil)
 
 	instanceID, err := engine.Start(context.Background(), workflowID, input)
 
@@ -949,8 +940,6 @@ func TestEngine_HandleStepSuccess_WithNextSteps(t *testing.T) {
 	mockStore.EXPECT().LogEvent(mock.Anything, instanceID, &stepID, EventStepCompleted, mock.Anything).Return(nil)
 	mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
 	mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, instance.WorkflowID).Return(definition, nil)
-	mockStore.EXPECT().GetStepsByInstance(mock.Anything, instanceID).Return([]WorkflowStep{step}, nil)
-	mockStore.EXPECT().GetStepsByInstance(mock.Anything, instanceID).Return([]WorkflowStep{step}, nil)
 	mockStore.EXPECT().CreateStep(mock.Anything, mock.MatchedBy(func(s *WorkflowStep) bool {
 		return s.InstanceID == instanceID && s.StepName == "step2"
 	})).Return(nil)
@@ -1273,5 +1262,1031 @@ func TestEngine_ValidateDefinition_ComplexWorkflow(t *testing.T) {
 
 	err := engine.validateDefinition(definition)
 
+	assert.NoError(t, err)
+}
+
+// -- jitteredCooldown -------------------------------------------------------
+
+func Test_jitteredCooldown_BaseZero(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+	engine.missingHandlerCooldown = 0
+	assert.Equal(t, time.Duration(0), engine.jitteredCooldown())
+}
+
+func Test_jitteredCooldown_NoJitter(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+	engine.missingHandlerCooldown = 100 * time.Millisecond
+	engine.missingHandlerJitterPct = 0
+	for i := 0; i < 5; i++ {
+		assert.Equal(t, 100*time.Millisecond, engine.jitteredCooldown())
+	}
+}
+
+func Test_jitteredCooldown_WithJitterWithinBounds(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+	base := 200 * time.Millisecond
+	pct := 0.25 // 25%
+	engine.missingHandlerCooldown = base
+	engine.missingHandlerJitterPct = pct
+
+	min := float64(base) * (1 - pct)
+	max := float64(base) * (1 + pct)
+	for i := 0; i < 20; i++ {
+		d := engine.jitteredCooldown()
+		dd := float64(d)
+		if dd < min || dd > max {
+			t.Fatalf("cooldown %v out of bounds [%v, %v]", d, time.Duration(min), time.Duration(max))
+		}
+	}
+}
+
+// -- shouldLogSkip ----------------------------------------------------------
+
+func Test_shouldLogSkip_Throttle(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+	engine.missingHandlerLogThrottle = 50 * time.Millisecond
+
+	key := "abc"
+	assert.True(t, engine.shouldLogSkip(key))  // first allowed
+	assert.False(t, engine.shouldLogSkip(key)) // throttled
+	time.Sleep(60 * time.Millisecond)
+	assert.True(t, engine.shouldLogSkip(key)) // allowed after throttle
+}
+
+func Test_shouldLogSkip_DisabledThrottle(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+	engine.missingHandlerLogThrottle = 0
+	for i := 0; i < 3; i++ {
+		assert.True(t, engine.shouldLogSkip("k"))
+	}
+}
+
+// -- validateDefinition -----------------------------------------------------
+
+func Test_validateDefinition_Success(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+	def := &WorkflowDefinition{
+		ID:   "wf",
+		Name: "wf",
+		Definition: GraphDefinition{
+			Start: "A",
+			Steps: map[string]*StepDefinition{
+				"A": {Name: "A", Type: StepTypeTask, Next: []string{"B"}, Prev: rootStepName, Handler: "handlerA"},
+				"B": {Name: "B", Type: StepTypeTask, Prev: "A", Handler: "handlerB"},
+			},
+		},
+	}
+	assert.NoError(t, engine.validateDefinition(def))
+}
+
+func Test_validateDefinition_Errors(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+
+	// no name
+	def1 := &WorkflowDefinition{Definition: GraphDefinition{Start: "A", Steps: map[string]*StepDefinition{"A": {Name: "A"}}}}
+	assert.Error(t, engine.validateDefinition(def1))
+
+	// no start
+	def2 := &WorkflowDefinition{Name: "wf", Definition: GraphDefinition{Steps: map[string]*StepDefinition{"A": {Name: "A"}}}}
+	assert.Error(t, engine.validateDefinition(def2))
+
+	// no steps
+	def3 := &WorkflowDefinition{Name: "wf", Definition: GraphDefinition{Start: "A", Steps: map[string]*StepDefinition{}}}
+	assert.Error(t, engine.validateDefinition(def3))
+
+	// start not found
+	def4 := &WorkflowDefinition{Name: "wf", Definition: GraphDefinition{Start: "X", Steps: map[string]*StepDefinition{"A": {Name: "A"}}}}
+	assert.Error(t, engine.validateDefinition(def4))
+
+	// next ref unknown
+	def5 := &WorkflowDefinition{
+		Name: "wf",
+		Definition: GraphDefinition{
+			Start: "A",
+			Steps: map[string]*StepDefinition{
+				"A": {Name: "A", Next: []string{"Z"}},
+			},
+		},
+	}
+	assert.Error(t, engine.validateDefinition(def5))
+
+	// onFailure unknown
+	def6 := &WorkflowDefinition{
+		Name: "wf",
+		Definition: GraphDefinition{
+			Start: "A",
+			Steps: map[string]*StepDefinition{
+				"A": {Name: "A", OnFailure: "C"},
+			},
+		},
+	}
+	assert.Error(t, engine.validateDefinition(def6))
+
+	// parallel unknown
+	def7 := &WorkflowDefinition{
+		Name: "wf",
+		Definition: GraphDefinition{
+			Start: "A",
+			Steps: map[string]*StepDefinition{
+				"A": {Name: "A", Type: StepTypeFork, Parallel: []string{"P1"}},
+			},
+		},
+	}
+	assert.Error(t, engine.validateDefinition(def7))
+}
+
+// -- determineExecutedBranch ------------------------------------------------
+
+func Test_determineExecutedBranch_Addl(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+	step := &StepDefinition{Name: "COND", Next: []string{"X"}, Else: "Y"}
+	m := map[string]*WorkflowStep{
+		"X": {StepName: "X", Status: StepStatusCompleted},
+	}
+	assert.Equal(t, "next", engine.determineExecutedBranch(step, m))
+
+	m = map[string]*WorkflowStep{
+		"Y": {StepName: "Y", Status: StepStatusCompensation},
+	}
+	assert.Equal(t, "else", engine.determineExecutedBranch(step, m))
+
+	m = map[string]*WorkflowStep{}
+	assert.Equal(t, "", engine.determineExecutedBranch(step, m))
+}
+
+// -- isStepInParallelBranch / isStepDescendantOf ----------------------------
+
+func Test_isStepInParallelBranch_and_isStepDescendantOf(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+	def := buildForkJoinDef()
+	fork := def.Definition.Steps["F"]
+
+	assert.True(t, engine.isStepInParallelBranch("A", fork, def))
+	assert.True(t, engine.isStepInParallelBranch("A1", fork, def))
+	assert.True(t, engine.isStepDescendantOf("A1", "A", def))
+	assert.False(t, engine.isStepDescendantOf("A", "A1", def))
+	assert.False(t, engine.isStepInParallelBranch("J", fork, def))
+}
+
+// -- hasPendingStepsInParallelBranches -------------------------------------
+
+func Test_hasPendingStepsInParallelBranches_TrueWhenOtherPending(t *testing.T) {
+	ctx := context.Background()
+	def := buildForkJoinDirectWaitForDef()
+	engine, store := newTestEngineWithStore(t)
+
+	instanceID := int64(200)
+	store.EXPECT().GetInstance(mock.Anything, instanceID).
+		Return(&WorkflowInstance{ID: instanceID, WorkflowID: def.ID}, nil).Maybe()
+	store.EXPECT().GetWorkflowDefinition(mock.Anything, def.ID).Return(def, nil).Maybe()
+
+	// Join.WaitFor = [A, B]. We have A completed, and a running descendant A1 not in WaitFor -> should be true
+	steps := []WorkflowStep{
+		{InstanceID: instanceID, StepName: "A", Status: StepStatusCompleted},
+		{InstanceID: instanceID, StepName: "A1", Status: StepStatusRunning}, // not in WaitFor for J
+	}
+	join := def.Definition.Steps["J"]
+
+	assert.True(t, engine.hasPendingStepsInParallelBranches(ctx, instanceID, join, steps))
+}
+
+func Test_hasPendingStepsInParallelBranches_FalseWhenNoOtherPending(t *testing.T) {
+	ctx := context.Background()
+	def := buildForkJoinDef()
+	engine, store := newTestEngineWithStore(t)
+
+	instanceID := int64(201)
+	store.EXPECT().GetInstance(mock.Anything, instanceID).
+		Return(&WorkflowInstance{ID: instanceID, WorkflowID: def.ID}, nil).Maybe()
+	store.EXPECT().GetWorkflowDefinition(mock.Anything, def.ID).Return(def, nil).Maybe()
+
+	steps := []WorkflowStep{
+		{InstanceID: instanceID, StepName: "A1", Status: StepStatusCompleted},
+		{InstanceID: instanceID, StepName: "B1", Status: StepStatusCompleted},
+	}
+	join := def.Definition.Steps["J"]
+
+	assert.False(t, engine.hasPendingStepsInParallelBranches(ctx, instanceID, join, steps))
+}
+
+// -- GetStatus/GetSteps pass-throughs --------------------------------------
+
+func Test_GetStatus_Passthrough(t *testing.T) {
+	ctx := context.Background()
+	engine, store := newTestEngineWithStore(t)
+	instanceID := int64(300)
+
+	status := StatusRunning
+	store.EXPECT().GetInstance(mock.Anything, instanceID).
+		Return(&WorkflowInstance{ID: instanceID, Status: status}, nil)
+
+	got, err := engine.GetStatus(ctx, instanceID)
+	assert.NoError(t, err)
+	assert.Equal(t, status, got)
+}
+
+func Test_GetSteps_Passthrough(t *testing.T) {
+	ctx := context.Background()
+	engine, store := newTestEngineWithStore(t)
+	instanceID := int64(301)
+
+	expected := []WorkflowStep{{InstanceID: instanceID, StepName: "A"}}
+	store.EXPECT().GetStepsByInstance(mock.Anything, instanceID).Return(expected, nil)
+
+	got, err := engine.GetSteps(ctx, instanceID)
+	assert.NoError(t, err)
+	assert.Equal(t, expected, got)
+}
+
+// -- RegisterHandler/RegisterPlugin basic registration ----------------------
+
+type dummyHandler struct{ name string }
+
+func (d dummyHandler) Name() string { return d.name }
+func (d dummyHandler) Execute(ctx context.Context, stepCtx StepContext, input json.RawMessage) (json.RawMessage, error) {
+	return nil, nil
+}
+
+func Test_RegisterHandler_StoresWrappedHandler(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+	h := dummyHandler{name: "H"}
+	engine.RegisterHandler(h)
+	engine.mu.RLock()
+	_, ok := engine.handlers["H"]
+	engine.mu.RUnlock()
+	assert.True(t, ok)
+}
+
+func Test_RegisterPlugin_CreatesManagerAndRegisters(t *testing.T) {
+	engine, _ := newTestEngineWithStore(t)
+	p := NewMockPlugin(t)
+	p.EXPECT().Name().Return("p1").Maybe()
+	engine.RegisterPlugin(p)
+	assert.NotNil(t, engine.pluginManager)
+}
+
+func TestEngine_ExecuteNext_CompensationMissingHandler_RescheduleAndRelease(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	// Background cancel worker queries (ignored)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+
+	// Configure engine so cooldown is deterministic and > 0
+	engine := NewEngine(
+		nil,
+		WithEngineTxManager(mockTxManager),
+		WithEngineStore(mockStore),
+		WithMissingHandlerCooldown(time.Second),
+		WithMissingHandlerJitterPct(0),
+	)
+	defer engine.Shutdown()
+
+	workerID := "worker-1"
+	instanceID := int64(10101)
+	stepID := int64(555)
+	queueItem := &QueueItem{ID: 777, InstanceID: instanceID, StepID: &stepID}
+
+	instance := &WorkflowInstance{ID: instanceID, WorkflowID: "wf-comp", Status: StatusRunning}
+	// The step to execute is in Compensation phase
+	step := WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "S", StepType: StepTypeTask, Status: StepStatusCompensation}
+
+	// Workflow definition with OnFailure handler that is NOT registered locally
+	def := &WorkflowDefinition{
+		ID:   instance.WorkflowID,
+		Name: "wf-comp",
+		Definition: GraphDefinition{
+			Start: "S",
+			Steps: map[string]*StepDefinition{
+				"S":    {Name: "S", Type: StepTypeTask, OnFailure: "Comp"},
+				"Comp": {Name: "Comp", Type: StepTypeTask, Handler: "comp-handler"},
+			},
+		},
+	}
+
+	// Expectations inside transaction
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		// Dequeue a specific item
+		mockStore.EXPECT().DequeueStep(mock.Anything, workerID).Return(queueItem, nil)
+		// Lookup instance and steps
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
+		mockStore.EXPECT().GetStepsByInstance(mock.Anything, instanceID).Return([]WorkflowStep{step}, nil)
+		// Definition is required to resolve OnFailure
+		mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, instance.WorkflowID).Return(def, nil)
+		// Since no local handler registered, engine must reschedule with cooldown (>0)
+		mockStore.EXPECT().RescheduleAndReleaseQueueItem(mock.Anything, queueItem.ID, time.Second).Return(nil)
+		// Throttled log should be emitted once
+		mockStore.EXPECT().LogEvent(mock.Anything, instance.ID, mock.Anything, EventStepSkippedMissingHandler, mock.Anything).Return(nil)
+
+		_ = fn(ctx)
+	}).Return(nil)
+
+	empty, err := engine.ExecuteNext(context.Background(), workerID)
+	assert.NoError(t, err)
+	assert.False(t, empty)
+	// Ensure engine did NOT remove the queue item explicitly (released instead)
+	mockStore.AssertNotCalled(t, "RemoveFromQueue", mock.Anything, queueItem.ID)
+}
+
+func TestEngine_ExecuteNext_CompensationMissingHandler_ReleaseOnly(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+
+	// Cooldown = 0 => immediate release (no reschedule)
+	engine := NewEngine(
+		nil,
+		WithEngineTxManager(mockTxManager),
+		WithEngineStore(mockStore),
+		WithMissingHandlerCooldown(0),
+		WithMissingHandlerJitterPct(0),
+	)
+	defer engine.Shutdown()
+
+	workerID := "worker-2"
+	instanceID := int64(20202)
+	stepID := int64(556)
+	queueItem := &QueueItem{ID: 778, InstanceID: instanceID, StepID: &stepID}
+
+	instance := &WorkflowInstance{ID: instanceID, WorkflowID: "wf-comp-0", Status: StatusRunning}
+	step := WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "S", StepType: StepTypeTask, Status: StepStatusCompensation}
+
+	def := &WorkflowDefinition{
+		ID:   instance.WorkflowID,
+		Name: "wf-comp-0",
+		Definition: GraphDefinition{
+			Start: "S",
+			Steps: map[string]*StepDefinition{
+				"S":    {Name: "S", Type: StepTypeTask, OnFailure: "Comp"},
+				"Comp": {Name: "Comp", Type: StepTypeTask, Handler: "comp-handler"},
+			},
+		},
+	}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().DequeueStep(mock.Anything, workerID).Return(queueItem, nil)
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
+		mockStore.EXPECT().GetStepsByInstance(mock.Anything, instanceID).Return([]WorkflowStep{step}, nil)
+		mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, instance.WorkflowID).Return(def, nil)
+		// With zero cooldown we expect a simple release
+		mockStore.EXPECT().ReleaseQueueItem(mock.Anything, queueItem.ID).Return(nil)
+		// Log once
+		mockStore.EXPECT().LogEvent(mock.Anything, instance.ID, mock.Anything, EventStepSkippedMissingHandler, mock.Anything).Return(nil)
+
+		_ = fn(ctx)
+	}).Return(nil)
+
+	empty, err := engine.ExecuteNext(context.Background(), workerID)
+	assert.NoError(t, err)
+	assert.False(t, empty)
+	mockStore.AssertNotCalled(t, "RemoveFromQueue", mock.Anything, queueItem.ID)
+}
+
+func TestEngine_ExecuteNext_TaskMissingHandler_RescheduleAndRelease(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	// Background cancel worker queries (ignored)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+
+	// Configure engine so cooldown is deterministic and > 0
+	engine := NewEngine(
+		nil,
+		WithEngineTxManager(mockTxManager),
+		WithEngineStore(mockStore),
+		WithMissingHandlerCooldown(time.Second),
+		WithMissingHandlerJitterPct(0),
+	)
+	defer engine.Shutdown()
+
+	workerID := "worker-task-1"
+	instanceID := int64(30303)
+	stepID := int64(901)
+	queueItem := &QueueItem{ID: 9901, InstanceID: instanceID, StepID: &stepID}
+
+	instance := &WorkflowInstance{ID: instanceID, WorkflowID: "wf-task", Status: StatusRunning}
+	// Normal task step (not compensation)
+	step := WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "TaskStep", StepType: StepTypeTask, Status: StepStatusPending}
+
+	def := &WorkflowDefinition{
+		ID:   instance.WorkflowID,
+		Name: "wf-task",
+		Definition: GraphDefinition{
+			Start: "TaskStep",
+			Steps: map[string]*StepDefinition{
+				"TaskStep": {Name: "TaskStep", Type: StepTypeTask, Handler: "missing-handler"},
+			},
+		},
+	}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().DequeueStep(mock.Anything, workerID).Return(queueItem, nil)
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
+		mockStore.EXPECT().GetStepsByInstance(mock.Anything, instanceID).Return([]WorkflowStep{step}, nil)
+		mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, instance.WorkflowID).Return(def, nil)
+		// Expect reschedule+release due to cooldown > 0
+		mockStore.EXPECT().RescheduleAndReleaseQueueItem(mock.Anything, queueItem.ID, time.Second).Return(nil)
+		// Throttled log emitted once
+		mockStore.EXPECT().LogEvent(mock.Anything, instance.ID, mock.Anything, EventStepSkippedMissingHandler, mock.Anything).Return(nil)
+
+		_ = fn(ctx)
+	}).Return(nil)
+
+	empty, err := engine.ExecuteNext(context.Background(), workerID)
+	assert.NoError(t, err)
+	assert.False(t, empty)
+	// Ensure explicit removal was not called
+	mockStore.AssertNotCalled(t, "RemoveFromQueue", mock.Anything, queueItem.ID)
+}
+
+func TestEngine_ExecuteNext_TaskMissingHandler_ReleaseOnly(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+
+	// Cooldown = 0 => immediate release
+	engine := NewEngine(
+		nil,
+		WithEngineTxManager(mockTxManager),
+		WithEngineStore(mockStore),
+		WithMissingHandlerCooldown(0),
+		WithMissingHandlerJitterPct(0),
+	)
+	defer engine.Shutdown()
+
+	workerID := "worker-task-2"
+	instanceID := int64(40404)
+	stepID := int64(902)
+	queueItem := &QueueItem{ID: 9902, InstanceID: instanceID, StepID: &stepID}
+
+	instance := &WorkflowInstance{ID: instanceID, WorkflowID: "wf-task-0", Status: StatusRunning}
+	step := WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "TaskStep", StepType: StepTypeTask, Status: StepStatusPending}
+
+	def := &WorkflowDefinition{
+		ID:   instance.WorkflowID,
+		Name: "wf-task-0",
+		Definition: GraphDefinition{
+			Start: "TaskStep",
+			Steps: map[string]*StepDefinition{
+				"TaskStep": {Name: "TaskStep", Type: StepTypeTask, Handler: "missing-handler"},
+			},
+		},
+	}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().DequeueStep(mock.Anything, workerID).Return(queueItem, nil)
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
+		mockStore.EXPECT().GetStepsByInstance(mock.Anything, instanceID).Return([]WorkflowStep{step}, nil)
+		mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, instance.WorkflowID).Return(def, nil)
+		mockStore.EXPECT().ReleaseQueueItem(mock.Anything, queueItem.ID).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instance.ID, mock.Anything, EventStepSkippedMissingHandler, mock.Anything).Return(nil)
+
+		_ = fn(ctx)
+	}).Return(nil)
+
+	empty, err := engine.ExecuteNext(context.Background(), workerID)
+	assert.NoError(t, err)
+	assert.False(t, empty)
+	mockStore.AssertNotCalled(t, "RemoveFromQueue", mock.Anything, queueItem.ID)
+}
+
+func TestEngine_ExecuteNext_TaskMissingHandler_LogThrottling(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+
+	// Cooldown = 0 for speed; keep default log throttle (>0)
+	engine := NewEngine(
+		nil,
+		WithEngineTxManager(mockTxManager),
+		WithEngineStore(mockStore),
+		WithMissingHandlerCooldown(0),
+		WithMissingHandlerJitterPct(0),
+	)
+	defer engine.Shutdown()
+
+	workerID := "worker-task-3"
+	instanceID := int64(50505)
+	stepID1 := int64(903)
+	stepID2 := int64(904)
+	queueItem1 := &QueueItem{ID: 9903, InstanceID: instanceID, StepID: &stepID1}
+	queueItem2 := &QueueItem{ID: 9904, InstanceID: instanceID, StepID: &stepID2}
+
+	instance := &WorkflowInstance{ID: instanceID, WorkflowID: "wf-task-throttle", Status: StatusRunning}
+	step1 := WorkflowStep{ID: stepID1, InstanceID: instanceID, StepName: "TaskStep", StepType: StepTypeTask, Status: StepStatusPending}
+	step2 := WorkflowStep{ID: stepID2, InstanceID: instanceID, StepName: "TaskStep", StepType: StepTypeTask, Status: StepStatusPending}
+
+	def := &WorkflowDefinition{
+		ID:   instance.WorkflowID,
+		Name: "wf-task-throttle",
+		Definition: GraphDefinition{
+			Start: "TaskStep",
+			Steps: map[string]*StepDefinition{
+				"TaskStep": {Name: "TaskStep", Type: StepTypeTask, Handler: "missing-handler"},
+			},
+		},
+	}
+
+	// First execution: should log
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().DequeueStep(mock.Anything, workerID).Return(queueItem1, nil)
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
+		mockStore.EXPECT().GetStepsByInstance(mock.Anything, instanceID).Return([]WorkflowStep{step1}, nil)
+		mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, instance.WorkflowID).Return(def, nil)
+		mockStore.EXPECT().ReleaseQueueItem(mock.Anything, queueItem1.ID).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instance.ID, mock.Anything, EventStepSkippedMissingHandler, mock.Anything).Return(nil)
+
+		_ = fn(ctx)
+	}).Return(nil)
+
+	// Second execution immediately: should NOT log again due to throttling
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().DequeueStep(mock.Anything, workerID).Return(queueItem2, nil)
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
+		mockStore.EXPECT().GetStepsByInstance(mock.Anything, instanceID).Return([]WorkflowStep{step2}, nil)
+		mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, instance.WorkflowID).Return(def, nil)
+		mockStore.EXPECT().ReleaseQueueItem(mock.Anything, queueItem2.ID).Return(nil)
+		// No LogEvent expectation here — throttled
+
+		_ = fn(ctx)
+	}).Return(nil)
+
+	empty, err := engine.ExecuteNext(context.Background(), workerID)
+	assert.NoError(t, err)
+	assert.False(t, empty)
+
+	empty, err = engine.ExecuteNext(context.Background(), workerID)
+	assert.NoError(t, err)
+	assert.False(t, empty)
+
+	// Ensure RemoveFromQueue wasn't called for either item
+	mockStore.AssertNotCalled(t, "RemoveFromQueue", mock.Anything, mock.Anything)
+}
+
+// ==== MakeHumanDecision tests ====
+
+func TestMakeHumanDecision_GetStepError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(1)
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(nil, errors.New("db err"))
+		_ = fn(ctx)
+	}).Return(errors.New("get step: db err"))
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionConfirmed, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "get step")
+}
+
+func TestMakeHumanDecision_NotHumanStep(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(2)
+	step := &WorkflowStep{ID: stepID, StepType: StepTypeTask}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		_ = fn(ctx)
+	}).Return(errors.New("step 2 is not a human step"))
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionConfirmed, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not a human step")
+}
+
+func TestMakeHumanDecision_NotWaitingStatus(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(3)
+	step := &WorkflowStep{ID: stepID, StepType: StepTypeHuman, Status: StepStatusPending}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		_ = fn(ctx)
+	}).Return(errors.New("step 3 is not waiting for decision (current status: pending)"))
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionConfirmed, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not waiting for decision")
+}
+
+func TestMakeHumanDecision_CreateDecisionError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(4)
+	step := &WorkflowStep{ID: stepID, InstanceID: 10, StepName: "H", StepType: StepTypeHuman, Status: StepStatusWaitingDecision}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		mockStore.EXPECT().CreateHumanDecision(mock.Anything, mock.Anything).Return(errors.New("create fail"))
+		_ = fn(ctx)
+	}).Return(errors.New("create human decision: create fail"))
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionConfirmed, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "create human decision")
+}
+
+func TestMakeHumanDecision_UpdateStepStatusError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(5)
+	step := &WorkflowStep{ID: stepID, InstanceID: 10, StepName: "H", StepType: StepTypeHuman, Status: StepStatusWaitingDecision}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		mockStore.EXPECT().CreateHumanDecision(mock.Anything, mock.Anything).Return(nil)
+		mockStore.EXPECT().UpdateStepStatus(mock.Anything, stepID, StepStatusConfirmed).Return(errors.New("upd err"))
+		// LogEvent may be called, but we won't assert since error occurs before function returns
+		_ = fn(ctx)
+	}).Return(errors.New("update step status: upd err"))
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionConfirmed, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "update step status")
+}
+
+func TestMakeHumanDecision_Confirmed_PendingInstance_Continues(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(6)
+	instanceID := int64(20)
+	step := &WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "H", StepType: StepTypeHuman, Status: StepStatusWaitingDecision}
+	instance := &WorkflowInstance{ID: instanceID, WorkflowID: "wf", Status: StatusPending}
+	def := &WorkflowDefinition{ID: instance.WorkflowID, Definition: GraphDefinition{Steps: map[string]*StepDefinition{"H": {Name: "H", Type: StepTypeHuman}}}}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		mockStore.EXPECT().CreateHumanDecision(mock.Anything, mock.Anything).Return(nil)
+		mockStore.EXPECT().UpdateStepStatus(mock.Anything, stepID, StepStatusConfirmed).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instanceID, &stepID, EventStepCompleted, mock.Anything).Return(nil).Maybe()
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
+		mockStore.EXPECT().UpdateInstanceStatus(mock.Anything, instanceID, StatusRunning, mock.Anything, mock.Anything).Return(nil)
+		// continueWorkflowAfterHumanDecision -> GetWorkflowDefinition then early-return in handleStepSuccess
+		mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, instance.WorkflowID).Return(def, nil)
+
+		_ = fn(ctx)
+	}).Return(nil)
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionConfirmed, nil)
+	assert.NoError(t, err)
+}
+
+func TestMakeHumanDecision_Confirmed_RunningInstance_NoStatusUpdate(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(7)
+	instanceID := int64(21)
+	step := &WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "H", StepType: StepTypeHuman, Status: StepStatusWaitingDecision}
+	instance := &WorkflowInstance{ID: instanceID, WorkflowID: "wf", Status: StatusRunning}
+	def := &WorkflowDefinition{ID: instance.WorkflowID, Definition: GraphDefinition{Steps: map[string]*StepDefinition{"H": {Name: "H", Type: StepTypeHuman}}}}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		mockStore.EXPECT().CreateHumanDecision(mock.Anything, mock.Anything).Return(nil)
+		mockStore.EXPECT().UpdateStepStatus(mock.Anything, stepID, StepStatusConfirmed).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instanceID, &stepID, EventStepCompleted, mock.Anything).Return(nil).Maybe()
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
+		// No UpdateInstanceStatus expected
+		mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, instance.WorkflowID).Return(def, nil)
+		_ = fn(ctx)
+	}).Return(nil)
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionConfirmed, nil)
+	assert.NoError(t, err)
+}
+
+func TestMakeHumanDecision_Confirmed_GetInstanceError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(8)
+	instanceID := int64(22)
+	step := &WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "H", StepType: StepTypeHuman, Status: StepStatusWaitingDecision}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		mockStore.EXPECT().CreateHumanDecision(mock.Anything, mock.Anything).Return(nil)
+		mockStore.EXPECT().UpdateStepStatus(mock.Anything, stepID, StepStatusConfirmed).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instanceID, &stepID, EventStepCompleted, mock.Anything).Return(nil).Maybe()
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(nil, errors.New("get inst err"))
+		_ = fn(ctx)
+	}).Return(errors.New("get instance: get inst err"))
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionConfirmed, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "get instance")
+}
+
+func TestMakeHumanDecision_Confirmed_UpdateInstanceStatusError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(9)
+	instanceID := int64(23)
+	step := &WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "H", StepType: StepTypeHuman, Status: StepStatusWaitingDecision}
+	instance := &WorkflowInstance{ID: instanceID, WorkflowID: "wf", Status: StatusPending}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		mockStore.EXPECT().CreateHumanDecision(mock.Anything, mock.Anything).Return(nil)
+		mockStore.EXPECT().UpdateStepStatus(mock.Anything, stepID, StepStatusConfirmed).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instanceID, &stepID, EventStepCompleted, mock.Anything).Return(nil).Maybe()
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
+		mockStore.EXPECT().UpdateInstanceStatus(mock.Anything, instanceID, StatusRunning, mock.Anything, mock.Anything).Return(errors.New("upd inst"))
+		_ = fn(ctx)
+	}).Return(errors.New("update instance status: upd inst"))
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionConfirmed, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "update instance status")
+}
+
+func TestMakeHumanDecision_Confirmed_ContinueError_GetDef(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(10)
+	instanceID := int64(24)
+	step := &WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "H", StepType: StepTypeHuman, Status: StepStatusWaitingDecision}
+	instance := &WorkflowInstance{ID: instanceID, WorkflowID: "wf", Status: StatusRunning}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		mockStore.EXPECT().CreateHumanDecision(mock.Anything, mock.Anything).Return(nil)
+		mockStore.EXPECT().UpdateStepStatus(mock.Anything, stepID, StepStatusConfirmed).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instanceID, &stepID, EventStepCompleted, mock.Anything).Return(nil).Maybe()
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(instance, nil)
+		mockStore.EXPECT().GetWorkflowDefinition(mock.Anything, instance.WorkflowID).Return(nil, errors.New("no def"))
+		_ = fn(ctx)
+	}).Return(errors.New("get workflow definition: no def"))
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionConfirmed, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "get workflow definition")
+}
+
+func TestMakeHumanDecision_Rejected_AbortsWorkflow(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(11)
+	instanceID := int64(25)
+	step := &WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "H", StepType: StepTypeHuman, Status: StepStatusWaitingDecision}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		mockStore.EXPECT().CreateHumanDecision(mock.Anything, mock.Anything).Return(nil)
+		mockStore.EXPECT().UpdateStepStatus(mock.Anything, stepID, StepStatusRejected).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instanceID, &stepID, EventStepCompleted, mock.Anything).Return(nil).Maybe()
+		mockStore.EXPECT().UpdateInstanceStatus(mock.Anything, instanceID, StatusAborted, mock.Anything, mock.Anything).Return(nil)
+		_ = fn(ctx)
+	}).Return(nil)
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionRejected, nil)
+	assert.NoError(t, err)
+}
+
+func TestMakeHumanDecision_Rejected_UpdateInstanceStatusError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	stepID := int64(12)
+	instanceID := int64(26)
+	step := &WorkflowStep{ID: stepID, InstanceID: instanceID, StepName: "H", StepType: StepTypeHuman, Status: StepStatusWaitingDecision}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetStepByID(mock.Anything, stepID).Return(step, nil)
+		mockStore.EXPECT().CreateHumanDecision(mock.Anything, mock.Anything).Return(nil)
+		mockStore.EXPECT().UpdateStepStatus(mock.Anything, stepID, StepStatusRejected).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instanceID, &stepID, EventStepCompleted, mock.Anything).Return(nil).Maybe()
+		mockStore.EXPECT().UpdateInstanceStatus(mock.Anything, instanceID, StatusAborted, mock.Anything, mock.Anything).Return(errors.New("fail"))
+		_ = fn(ctx)
+	}).Return(errors.New("fail"))
+
+	err := engine.MakeHumanDecision(context.Background(), stepID, "user", HumanDecisionRejected, nil)
+	assert.Error(t, err)
+}
+
+// ==== CancelWorkflow & AbortWorkflow unit tests ====
+
+func TestCancelWorkflow_GetInstanceError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	ctx := context.Background()
+	instanceID := int64(1001)
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(nil, errors.New("db err"))
+		_ = fn(ctx)
+	}).Return(errors.New("get instance: db err"))
+
+	err := engine.CancelWorkflow(ctx, instanceID, "user", "because")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "get instance")
+}
+
+func TestCancelWorkflow_TerminalStateError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	ctx := context.Background()
+	instanceID := int64(1002)
+	inst := &WorkflowInstance{ID: instanceID, Status: StatusCompleted}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(inst, nil)
+		_ = fn(ctx)
+	}).Return(errors.New("workflow 1002 is already in terminal state: completed"))
+
+	err := engine.CancelWorkflow(ctx, instanceID, "user", "because")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already in terminal state")
+}
+
+func TestCancelWorkflow_CreateCancelRequestError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	ctx := context.Background()
+	instanceID := int64(1003)
+	inst := &WorkflowInstance{ID: instanceID, Status: StatusRunning}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(inst, nil)
+		mockStore.EXPECT().CreateCancelRequest(mock.Anything, mock.Anything).Return(errors.New("insert err"))
+		_ = fn(ctx)
+	}).Return(errors.New("create cancel request: insert err"))
+
+	err := engine.CancelWorkflow(ctx, instanceID, "user", "because")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "create cancel request")
+}
+
+func TestCancelWorkflow_Success(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	ctx := context.Background()
+	instanceID := int64(1004)
+	inst := &WorkflowInstance{ID: instanceID, Status: StatusRunning}
+	requestedBy := "user"
+	reason := "cancel reason"
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(inst, nil)
+		mockStore.EXPECT().CreateCancelRequest(mock.Anything, mock.MatchedBy(func(req *WorkflowCancelRequest) bool {
+			return req.InstanceID == instanceID && req.RequestedBy == requestedBy && req.CancelType == CancelTypeCancel && req.Reason != nil && *req.Reason == reason
+		})).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instanceID, mock.Anything, EventCancellationStarted, mock.MatchedBy(func(data map[string]any) bool { return data[KeyCancelType] == CancelTypeCancel })).Return(nil)
+		_ = fn(ctx)
+	}).Return(nil)
+
+	err := engine.CancelWorkflow(ctx, instanceID, requestedBy, reason)
+	assert.NoError(t, err)
+}
+
+func TestAbortWorkflow_GetInstanceError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	ctx := context.Background()
+	instanceID := int64(2001)
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(nil, errors.New("db err"))
+		_ = fn(ctx)
+	}).Return(errors.New("get instance: db err"))
+
+	err := engine.AbortWorkflow(ctx, instanceID, "user", "fatal")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "get instance")
+}
+
+func TestAbortWorkflow_TerminalStateError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	ctx := context.Background()
+	instanceID := int64(2002)
+	inst := &WorkflowInstance{ID: instanceID, Status: StatusCancelled}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(inst, nil)
+		_ = fn(ctx)
+	}).Return(errors.New("workflow 2002 is already in terminal state: cancelled"))
+
+	err := engine.AbortWorkflow(ctx, instanceID, "user", "fatal")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already in terminal state")
+}
+
+func TestAbortWorkflow_CreateCancelRequestError(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	ctx := context.Background()
+	instanceID := int64(2003)
+	inst := &WorkflowInstance{ID: instanceID, Status: StatusRunning}
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(inst, nil)
+		mockStore.EXPECT().CreateCancelRequest(mock.Anything, mock.Anything).Return(errors.New("insert err"))
+		_ = fn(ctx)
+	}).Return(errors.New("create cancel request: insert err"))
+
+	err := engine.AbortWorkflow(ctx, instanceID, "user", "fatal")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "create cancel request")
+}
+
+func TestAbortWorkflow_Success(t *testing.T) {
+	mockTxManager := NewMockTxManager(t)
+	mockStore := NewMockStore(t)
+	mockStore.EXPECT().GetCancelRequest(mock.Anything, mock.Anything).Return(nil, ErrEntityNotFound).Maybe()
+	engine := NewEngine(nil, WithEngineTxManager(mockTxManager), WithEngineStore(mockStore))
+	defer engine.Shutdown()
+
+	ctx := context.Background()
+	instanceID := int64(2004)
+	inst := &WorkflowInstance{ID: instanceID, Status: StatusRunning}
+	requestedBy := "user"
+	reason := "fatal reason"
+
+	mockTxManager.EXPECT().ReadCommitted(mock.Anything, mock.Anything).Run(func(ctx context.Context, fn func(ctx context.Context) error) {
+		mockStore.EXPECT().GetInstance(mock.Anything, instanceID).Return(inst, nil)
+		mockStore.EXPECT().CreateCancelRequest(mock.Anything, mock.MatchedBy(func(req *WorkflowCancelRequest) bool {
+			return req.InstanceID == instanceID && req.RequestedBy == requestedBy && req.CancelType == CancelTypeAbort && req.Reason != nil && *req.Reason == reason
+		})).Return(nil)
+		mockStore.EXPECT().LogEvent(mock.Anything, instanceID, mock.Anything, EventAbortStarted, mock.MatchedBy(func(data map[string]any) bool { return data[KeyCancelType] == CancelTypeAbort })).Return(nil)
+		_ = fn(ctx)
+	}).Return(nil)
+
+	err := engine.AbortWorkflow(ctx, instanceID, requestedBy, reason)
 	assert.NoError(t, err)
 }
