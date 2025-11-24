@@ -73,6 +73,10 @@ func (store *StoreImpl) InvalidateDefinitionCache(id string) {
 }
 
 func (store *StoreImpl) SaveWorkflowDefinition(ctx context.Context, def *WorkflowDefinition) error {
+	if def == nil {
+		return errors.New("workflow definition is nil")
+	}
+
 	executor := store.getExecutor(ctx)
 
 	const query = `
@@ -226,6 +230,10 @@ WHERE id = $1`
 }
 
 func (store *StoreImpl) CreateStep(ctx context.Context, step *WorkflowStep) error {
+	if step == nil {
+		return errors.New("workflow step is nil")
+	}
+
 	if step.IdempotencyKey == "" {
 		step.IdempotencyKey = uuid.NewString()
 	}
@@ -1006,6 +1014,104 @@ ORDER BY created_at DESC`
 	return instances, rows.Err()
 }
 
+func (store *StoreImpl) GetWorkflowInstancesPaginated(ctx context.Context, workflowID string, offset int, limit int) ([]WorkflowInstance, int64, error) {
+	executor := store.getExecutor(ctx)
+
+	const countQuery = `
+SELECT COUNT(*)
+FROM workflows.workflow_instances
+WHERE workflow_id = $1`
+
+	var total int64
+	if err := executor.QueryRow(ctx, countQuery, workflowID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	const query = `
+SELECT id, workflow_id, status, input, output, error, 
+		started_at, completed_at, created_at, updated_at
+FROM workflows.workflow_instances
+WHERE workflow_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3`
+
+	rows, err := executor.Query(ctx, query, workflowID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	instances := make([]WorkflowInstance, 0)
+	for rows.Next() {
+		var instance WorkflowInstance
+		err := rows.Scan(
+			&instance.ID,
+			&instance.WorkflowID,
+			&instance.Status,
+			&instance.Input,
+			&instance.Output,
+			&instance.Error,
+			&instance.StartedAt,
+			&instance.CompletedAt,
+			&instance.CreatedAt,
+			&instance.UpdatedAt,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+		instances = append(instances, instance)
+	}
+
+	return instances, total, rows.Err()
+}
+
+func (store *StoreImpl) GetAllWorkflowInstancesPaginated(ctx context.Context, offset int, limit int) ([]WorkflowInstance, int64, error) {
+	executor := store.getExecutor(ctx)
+
+	const countQuery = `SELECT COUNT(*) FROM workflows.workflow_instances`
+
+	var total int64
+	if err := executor.QueryRow(ctx, countQuery).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	const query = `
+SELECT id, workflow_id, status, input, output, error, 
+		started_at, completed_at, created_at, updated_at
+FROM workflows.workflow_instances
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2`
+
+	rows, err := executor.Query(ctx, query, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	instances := make([]WorkflowInstance, 0)
+	for rows.Next() {
+		var instance WorkflowInstance
+		err := rows.Scan(
+			&instance.ID,
+			&instance.WorkflowID,
+			&instance.Status,
+			&instance.Input,
+			&instance.Output,
+			&instance.Error,
+			&instance.StartedAt,
+			&instance.CompletedAt,
+			&instance.CreatedAt,
+			&instance.UpdatedAt,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+		instances = append(instances, instance)
+	}
+
+	return instances, total, rows.Err()
+}
+
 func (store *StoreImpl) GetWorkflowSteps(ctx context.Context, instanceID int64) ([]WorkflowStep, error) {
 	executor := store.getExecutor(ctx)
 
@@ -1089,6 +1195,10 @@ FOR UPDATE SKIP LOCKED`
 }
 
 func (store *StoreImpl) CreateCancelRequest(ctx context.Context, req *WorkflowCancelRequest) error {
+	if req == nil {
+		return errors.New("cancel request is nil")
+	}
+
 	executor := store.getExecutor(ctx)
 
 	const query = `
@@ -1218,6 +1328,10 @@ FROM workflows.workflow_stats`
 }
 
 func (store *StoreImpl) CreateHumanDecision(ctx context.Context, decision *HumanDecisionRecord) error {
+	if decision == nil {
+		return errors.New("human decision is nil")
+	}
+
 	executor := store.getExecutor(ctx)
 
 	const query = `
@@ -1340,6 +1454,10 @@ func (store *StoreImpl) CreateDeadLetterRecord(
 	ctx context.Context,
 	rec *DeadLetterRecord,
 ) error {
+	if rec == nil {
+		return errors.New("dead letter record is nil")
+	}
+
 	executor := store.getExecutor(ctx)
 
 	const query = `
