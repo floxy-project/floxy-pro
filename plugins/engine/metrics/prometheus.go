@@ -7,7 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
-	floxy "github.com/rom8726/floxy-pro"
+	"github.com/rom8726/floxy-pro"
 )
 
 type PrometheusCollector struct {

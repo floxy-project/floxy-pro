@@ -92,5 +92,19 @@ services:
       - floxy-pro-migrate
     entrypoint: ["/app/floxyd", "/app/config.yml"]
 
+  floxy-jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: floxy-jaeger
+    restart: always
+    environment:
+      COLLECTOR_OTLP_ENABLED: true
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+      - "14268:14268"
+    depends_on:
+      - floxy-pg
+
 volumes:
   floxy_pro_pg:

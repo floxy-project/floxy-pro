@@ -3,7 +3,7 @@ package metrics
 import (
 	"time"
 
-	floxy "github.com/rom8726/floxy-pro"
+	"github.com/rom8726/floxy-pro"
 )
 
 type MetricsCollector interface {
