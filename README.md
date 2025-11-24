@@ -1,8 +1,10 @@
 # floxy-pro
 
+![Go Version](https://img.shields.io/badge/Go-%3E=1.25-blue)
 [![Go Reference](https://pkg.go.dev/badge/github.com/rom8726/floxy-pro.svg)](https://pkg.go.dev/github.com/rom8726/floxy-pro)
 [![Go Report Card](https://goreportcard.com/badge/github.com/rom8726/floxy-pro)](https://goreportcard.com/report/github.com/rom8726/floxy-pro)
 [![Coverage Status](https://coveralls.io/repos/github/rom8726/floxy-pro/badge.svg?branch=main)](https://coveralls.io/github/rom8726/floxy-pro?branch=main)
+[![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 [![boosty-cozy](https://gideonwhite1029.github.io/badges/cozy-boosty_vector.svg)](https://boosty.to/dev-tools-hacker)
 
@@ -46,6 +48,7 @@ By using this project, you acknowledge that **all risks are your own**, and the 
 - [Dead Letter Queue](#dead-letter-queue-dlq)
 - [Known Issues](#known-issues)
   - [Condition Steps in Forked Branches](#condition-steps-in-forked-branches)
+  - [Rollback for nested Fork/Join branches](#rollback-for-nested-fork-/-join-branches)
 - [Installation](#installation)
 - [Dependencies](#dependencies)
 
