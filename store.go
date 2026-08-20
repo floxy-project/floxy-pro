@@ -332,6 +332,8 @@ func (store *StoreImpl) DequeueStep(ctx context.Context, workerID string) (*Queu
 	executor := store.getExecutor(ctx)
 
 	now := time.Now()
+	defaultLockNanos := defaultWorkflowLockTimeout.Nanoseconds()
+	lockToken := uuid.NewString()
 
 	var query string
 	var args []any
@@ -339,45 +341,106 @@ func (store *StoreImpl) DequeueStep(ctx context.Context, workerID string) (*Queu
 		// Priority aging: increase effective priority as items wait
 		query = `
 WITH next_item AS (
-	SELECT id
-	FROM workflows.workflow_queue
-	WHERE scheduled_at <= $1 AND attempted_at IS NULL
+	SELECT
+		q.id,
+		wi.id AS instance_id,
+		$1::timestamptz + (
+			COALESCE(NULLIF(NULLIF(wd.definition->>'workflow_lock_timeout', '')::bigint, 0), $2)::double precision / 1000000000.0
+		) * INTERVAL '1 second' AS locked_until
+	FROM workflows.workflow_queue q
+	JOIN workflows.workflow_instances wi ON wi.id = q.instance_id
+	JOIN workflows.workflow_definitions wd ON wd.id = wi.workflow_id
+	WHERE q.scheduled_at <= $1
+		AND (
+			q.attempted_at IS NULL
+			OR (q.locked_until IS NOT NULL AND q.locked_until < $1)
+		)
 	ORDER BY
 		LEAST(100,
-			priority + FLOOR(EXTRACT(EPOCH FROM ($1 - scheduled_at)) * $2)
+			q.priority + FLOOR(EXTRACT(EPOCH FROM ($1 - q.scheduled_at)) * $3)
 		) DESC,
-		scheduled_at ASC
+		q.scheduled_at ASC
 	LIMIT 1
-	FOR UPDATE SKIP LOCKED
+	FOR UPDATE OF q, wi SKIP LOCKED
+),
+locked_instance AS (
+	UPDATE workflows.workflow_instances wi
+	SET status = CASE WHEN wi.status IN ('pending', 'running') THEN 'running' ELSE wi.status END,
+		updated_at = $1
+	FROM next_item
+	WHERE wi.id = next_item.instance_id
+	RETURNING wi.id
 )
 UPDATE workflows.workflow_queue
-SET attempted_at = $1, attempted_by = $3
-FROM next_item
+SET attempted_at = $1,
+	attempted_by = $4,
+	locked_until = next_item.locked_until,
+	lock_token = $5
+FROM next_item, locked_instance
 WHERE workflows.workflow_queue.id = next_item.id
-RETURNING workflows.workflow_queue.id, instance_id, step_id, scheduled_at, attempted_at, attempted_by, priority`
-		args = []any{now, store.agingRate, workerID}
+RETURNING workflows.workflow_queue.id,
+	workflows.workflow_queue.instance_id,
+	workflows.workflow_queue.step_id,
+	workflows.workflow_queue.scheduled_at,
+	workflows.workflow_queue.attempted_at,
+	workflows.workflow_queue.attempted_by,
+	workflows.workflow_queue.locked_until,
+	workflows.workflow_queue.lock_token,
+	workflows.workflow_queue.priority`
+		args = []any{now, defaultLockNanos, store.agingRate, workerID, lockToken}
 	} else {
 		query = `
 WITH next_item AS (
-	SELECT id
-	FROM workflows.workflow_queue
-	WHERE scheduled_at <= $1 AND attempted_at IS NULL
-	ORDER BY priority DESC, scheduled_at ASC
+	SELECT
+		q.id,
+		wi.id AS instance_id,
+		$1::timestamptz + (
+			COALESCE(NULLIF(NULLIF(wd.definition->>'workflow_lock_timeout', '')::bigint, 0), $2)::double precision / 1000000000.0
+		) * INTERVAL '1 second' AS locked_until
+	FROM workflows.workflow_queue q
+	JOIN workflows.workflow_instances wi ON wi.id = q.instance_id
+	JOIN workflows.workflow_definitions wd ON wd.id = wi.workflow_id
+	WHERE q.scheduled_at <= $1
+		AND (
+			q.attempted_at IS NULL
+			OR (q.locked_until IS NOT NULL AND q.locked_until < $1)
+		)
+	ORDER BY q.priority DESC, q.scheduled_at ASC
 	LIMIT 1
-	FOR UPDATE SKIP LOCKED
+	FOR UPDATE OF q, wi SKIP LOCKED
+),
+locked_instance AS (
+	UPDATE workflows.workflow_instances wi
+	SET status = CASE WHEN wi.status IN ('pending', 'running') THEN 'running' ELSE wi.status END,
+		updated_at = $1
+	FROM next_item
+	WHERE wi.id = next_item.instance_id
+	RETURNING wi.id
 )
 UPDATE workflows.workflow_queue
-SET attempted_at = $1, attempted_by = $2
-FROM next_item
+SET attempted_at = $1,
+	attempted_by = $3,
+	locked_until = next_item.locked_until,
+	lock_token = $4
+FROM next_item, locked_instance
 WHERE workflows.workflow_queue.id = next_item.id
-RETURNING workflows.workflow_queue.id, instance_id, step_id, scheduled_at, attempted_at, attempted_by, priority`
-		args = []any{now, workerID}
+RETURNING workflows.workflow_queue.id,
+	workflows.workflow_queue.instance_id,
+	workflows.workflow_queue.step_id,
+	workflows.workflow_queue.scheduled_at,
+	workflows.workflow_queue.attempted_at,
+	workflows.workflow_queue.attempted_by,
+	workflows.workflow_queue.locked_until,
+	workflows.workflow_queue.lock_token,
+	workflows.workflow_queue.priority`
+		args = []any{now, defaultLockNanos, workerID, lockToken}
 	}
 
 	item := &QueueItem{}
 	err := executor.QueryRow(ctx, query, args...).Scan(
 		&item.ID, &item.InstanceID, &item.StepID,
-		&item.ScheduledAt, &item.AttemptedAt, &item.AttemptedBy, &item.Priority,
+		&item.ScheduledAt, &item.AttemptedAt, &item.AttemptedBy, &item.LockedUntil, &item.LockToken,
+		&item.Priority,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -385,6 +448,51 @@ RETURNING workflows.workflow_queue.id, instance_id, step_id, scheduled_at, attem
 	}
 
 	return item, err
+}
+
+func (store *StoreImpl) ExtendQueueItemLock(
+	ctx context.Context,
+	queueID int64,
+	lockToken string,
+	ttl time.Duration,
+) (bool, error) {
+	executor := store.getExecutor(ctx)
+
+	if ttl <= 0 {
+		ttl = defaultWorkflowLockTimeout
+	}
+
+	const query = `
+UPDATE workflows.workflow_queue
+SET locked_until = NOW() + ($3::double precision / 1000000000.0) * INTERVAL '1 second'
+WHERE id = $1
+	AND lock_token = $2
+	AND locked_until > NOW()`
+	tag, err := executor.Exec(ctx, query, queueID, lockToken, ttl.Nanoseconds())
+	if err != nil {
+		return false, err
+	}
+
+	return tag.RowsAffected() > 0, nil
+}
+
+func (store *StoreImpl) QueueItemLockStillOwned(ctx context.Context, queueID int64, lockToken string) (bool, error) {
+	executor := store.getExecutor(ctx)
+
+	const query = `
+SELECT TRUE
+FROM workflows.workflow_queue
+WHERE id = $1
+	AND lock_token = $2
+	AND locked_until > NOW()
+FOR UPDATE`
+	var owned bool
+	err := executor.QueryRow(ctx, query, queueID, lockToken).Scan(&owned)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+
+	return owned, err
 }
 
 func (store *StoreImpl) RemoveFromQueue(ctx context.Context, queueID int64) error {
@@ -399,7 +507,13 @@ func (store *StoreImpl) RemoveFromQueue(ctx context.Context, queueID int64) erro
 func (store *StoreImpl) ReleaseQueueItem(ctx context.Context, queueID int64) error {
 	executor := store.getExecutor(ctx)
 
-	const query = `UPDATE workflows.workflow_queue SET attempted_at = NULL, attempted_by = NULL WHERE id = $1`
+	const query = `
+UPDATE workflows.workflow_queue
+SET attempted_at = NULL,
+	attempted_by = NULL,
+	locked_until = NULL,
+	lock_token = NULL
+WHERE id = $1`
 	_, err := executor.Exec(ctx, query, queueID)
 
 	return err
@@ -412,7 +526,9 @@ func (store *StoreImpl) RescheduleAndReleaseQueueItem(ctx context.Context, queue
 UPDATE workflows.workflow_queue
 SET scheduled_at = GREATEST(scheduled_at, $2),
     attempted_at = NULL,
-    attempted_by = NULL
+    attempted_by = NULL,
+    locked_until = NULL,
+    lock_token = NULL
 WHERE id = $1`
 
 	scheduledAt := time.Now().Add(delay)
