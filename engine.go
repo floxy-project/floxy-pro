@@ -320,35 +320,38 @@ func (engine *Engine) ExecuteNext(ctx context.Context, workerID string) (empty b
 		return true, nil
 	}
 
+	item, err := engine.store.DequeueStep(ctx, workerID)
+	if err != nil {
+		return false, fmt.Errorf("dequeue step: %w", err)
+	}
+
+	if item == nil {
+		return true, nil
+	}
+
+	if engine.isShutdown() {
+		_ = engine.store.ReleaseQueueItem(ctx, item.ID)
+
+		return true, nil
+	}
+
+	engine.activeSteps.Add(1)
+	defer engine.activeSteps.Done()
+
+	stopHeartbeat := engine.startQueueItemLockHeartbeat(ctx, item)
+	defer stopHeartbeat()
+
+	var taskExecution *preparedTaskExecution
+	removeFromQueue := true
 	err = engine.txManager.ReadCommitted(ctx, func(ctx context.Context) error {
 		if engine.isShutdown() {
-			empty = true
-
-			return nil
-		}
-
-		item, err := engine.store.DequeueStep(ctx, workerID)
-		if err != nil {
-			return fmt.Errorf("dequeue step: %w", err)
-		}
-
-		if item == nil {
-			empty = true
-
-			return nil
-		}
-
-		if engine.isShutdown() {
 			_ = engine.store.ReleaseQueueItem(ctx, item.ID)
+			removeFromQueue = false
 			empty = true
 
 			return nil
 		}
 
-		engine.activeSteps.Add(1)
-		defer engine.activeSteps.Done()
-
-		removeFromQueue := true
 		defer func() {
 			if removeFromQueue {
 				_ = engine.store.RemoveFromQueue(ctx, item.ID)
@@ -398,7 +401,7 @@ func (engine *Engine) ExecuteNext(ctx context.Context, workerID string) (empty b
 		if step.Status == StepStatusSkipped ||
 			step.Status == StepStatusPaused ||
 			step.Status == StepStatusRolledBack {
-			if err := engine.store.RemoveFromQueue(ctx, step.ID); err != nil {
+			if err := engine.store.RemoveFromQueue(ctx, item.ID); err != nil {
 				return fmt.Errorf("remove step from queue: %w", err)
 			}
 
@@ -450,7 +453,12 @@ func (engine *Engine) ExecuteNext(ctx context.Context, workerID string) (empty b
 				}
 			}
 
-			return engine.executeCompensationStep(ctx, instance, step)
+			err = engine.executeCompensationStep(ctx, instance, step, item)
+			if errors.Is(err, ErrQueueItemLockLost) {
+				removeFromQueue = false
+			}
+
+			return err
 		}
 
 		// Distributed handlers: if this is a task step and no local handler is registered,
@@ -492,13 +500,261 @@ func (engine *Engine) ExecuteNext(ctx context.Context, workerID string) (empty b
 			}
 		}
 
-		return engine.executeStep(ctx, instance, step)
+		if step.StepType == StepTypeTask {
+			taskExecution = &preparedTaskExecution{
+				instance: instance,
+				step:     step,
+				stepDef:  stepDef,
+			}
+			if err := engine.prepareTaskExecution(ctx, taskExecution); err != nil {
+				return err
+			}
+			if taskExecution.skipHandler {
+				taskExecution = nil
+
+				return nil
+			}
+			removeFromQueue = false
+
+			return nil
+		}
+
+		err = engine.executeStep(ctx, instance, step, item)
+		if errors.Is(err, ErrQueueItemLockLost) {
+			removeFromQueue = false
+		}
+
+		return err
 	})
 	if err != nil {
+		if removeFromQueue {
+			_ = engine.store.ReleaseQueueItem(ctx, item.ID)
+		}
+
 		return empty, err
 	}
 
+	if taskExecution != nil {
+		err = engine.executePreparedTask(ctx, item, taskExecution)
+		if err != nil {
+			if !errors.Is(err, ErrQueueItemLockLost) {
+				_ = engine.store.ReleaseQueueItem(ctx, item.ID)
+			}
+
+			return empty, err
+		}
+	}
+
 	return empty, nil
+}
+
+type preparedTaskExecution struct {
+	instance    *WorkflowInstance
+	step        *WorkflowStep
+	stepDef     *StepDefinition
+	output      json.RawMessage
+	stepErr     error
+	skipHandler bool
+}
+
+func (engine *Engine) prepareTaskExecution(ctx context.Context, task *preparedTaskExecution) error {
+	if engine.pluginManager != nil {
+		if err := engine.pluginManager.ExecuteStepStart(ctx, task.instance, task.step); err != nil {
+			return fmt.Errorf("plugin hook OnStepStart failed: %w", err)
+		}
+	}
+
+	cancelReq, err := engine.store.GetCancelRequest(ctx, task.instance.ID)
+	if err == nil && cancelReq != nil {
+		task.skipHandler = true
+
+		return engine.handleCancellation(ctx, task.instance, task.step, cancelReq)
+	}
+
+	if err := engine.store.UpdateStep(ctx, task.step.ID, StepStatusRunning, nil, nil); err != nil {
+		return fmt.Errorf("update step status: %w", err)
+	}
+
+	_ = engine.store.LogEvent(ctx, task.instance.ID, &task.step.ID, EventStepStarted, map[string]any{
+		KeyStepName: task.step.StepName,
+		KeyStepType: task.stepDef.Type,
+	})
+
+	return nil
+}
+
+func (engine *Engine) executePreparedTask(ctx context.Context, item *QueueItem, task *preparedTaskExecution) error {
+	handlerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	engine.registerInstanceContext(task.instance.ID, task.step.ID, cancel)
+	defer engine.unregisterInstanceContext(task.instance.ID, task.step.ID)
+
+	if task.stepDef.Timeout != 0 {
+		var timeoutCancel context.CancelFunc
+		handlerCtx, timeoutCancel = context.WithTimeout(handlerCtx, task.stepDef.Timeout)
+		defer timeoutCancel()
+	}
+
+	task.output, task.stepErr = engine.executeTask(handlerCtx, task.instance, task.step, task.stepDef)
+
+	removeFromQueue := true
+	err := engine.txManager.ReadCommitted(ctx, func(ctx context.Context) error {
+		if err := engine.ensureQueueItemLock(ctx, item); err != nil {
+			removeFromQueue = false
+
+			return err
+		}
+
+		defer func() {
+			if removeFromQueue {
+				_ = engine.store.RemoveFromQueue(ctx, item.ID)
+			}
+		}()
+
+		if errors.Is(handlerCtx.Err(), context.Canceled) {
+			cancelReq, err := engine.store.GetCancelRequest(ctx, task.instance.ID)
+			if err == nil && cancelReq != nil {
+				return engine.handleCancellation(ctx, task.instance, task.step, cancelReq)
+			}
+		}
+
+		if task.stepErr != nil {
+			// PLUGIN HOOK: OnStepFailed
+			if engine.pluginManager != nil {
+				if errPlugin := engine.pluginManager.ExecuteStepFailed(ctx, task.instance, task.step, task.stepErr); errPlugin != nil {
+					slog.Warn("[floxy] plugin hook OnStepFailed failed", "error", errPlugin)
+				}
+			}
+
+			return engine.handleStepFailure(ctx, task.instance, task.step, task.stepDef, task.stepErr)
+		}
+
+		// PLUGIN HOOK: OnStepComplete
+		if engine.pluginManager != nil {
+			if err := engine.pluginManager.ExecuteStepComplete(ctx, task.instance, task.step); err != nil {
+				slog.Warn("[floxy] plugin hook OnStepComplete failed", "error", err)
+			}
+		}
+
+		return engine.handleStepSuccess(ctx, task.instance, task.step, task.stepDef, task.output, true)
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (engine *Engine) startQueueItemLockHeartbeat(ctx context.Context, item *QueueItem) func() {
+	lockToken, ok := queueItemLockToken(item)
+	if !ok {
+		return func() {}
+	}
+
+	ttl := queueItemLockTTL(item)
+	interval := queueItemLockHeartbeatInterval(ttl)
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				owned, err := engine.store.ExtendQueueItemLock(heartbeatCtx, item.ID, lockToken, ttl)
+				if err != nil {
+					if heartbeatCtx.Err() == nil {
+						slog.Warn("[floxy] failed to extend queue item lock",
+							"queue_id", item.ID,
+							"error", err,
+						)
+					}
+
+					return
+				}
+				if !owned {
+					slog.Warn("[floxy] queue item lock ownership lost",
+						"queue_id", item.ID,
+						"worker", queueItemAttemptedBy(item),
+					)
+
+					return
+				}
+			}
+		}
+	}()
+
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+func queueItemLockToken(item *QueueItem) (string, bool) {
+	if item == nil || item.LockToken == nil || *item.LockToken == "" {
+		return "", false
+	}
+
+	return *item.LockToken, true
+}
+
+func queueItemAttemptedBy(item *QueueItem) string {
+	if item == nil || item.AttemptedBy == nil {
+		return ""
+	}
+
+	return *item.AttemptedBy
+}
+
+func queueItemLockTTL(item *QueueItem) time.Duration {
+	if item != nil && item.LockedUntil != nil {
+		base := time.Now()
+		if item.AttemptedAt != nil {
+			base = *item.AttemptedAt
+		}
+		if ttl := item.LockedUntil.Sub(base); ttl > 0 {
+			return ttl
+		}
+	}
+
+	return defaultWorkflowLockTimeout
+}
+
+func queueItemLockHeartbeatInterval(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		ttl = defaultWorkflowLockTimeout
+	}
+
+	interval := ttl / 3
+	if interval < time.Millisecond {
+		return time.Millisecond
+	}
+
+	return interval
+}
+
+func (engine *Engine) ensureQueueItemLock(ctx context.Context, item *QueueItem) error {
+	lockToken, ok := queueItemLockToken(item)
+	if !ok {
+		return nil
+	}
+
+	owned, err := engine.store.QueueItemLockStillOwned(ctx, item.ID, lockToken)
+	if err != nil {
+		return fmt.Errorf("check queue item lock: %w", err)
+	}
+	if !owned {
+		return ErrQueueItemLockLost
+	}
+
+	return nil
 }
 
 func (engine *Engine) MakeHumanDecision(
@@ -743,7 +999,12 @@ func (engine *Engine) stopActiveSteps(ctx context.Context, instanceID int64) err
 	return nil
 }
 
-func (engine *Engine) executeStep(ctx context.Context, instance *WorkflowInstance, step *WorkflowStep) error {
+func (engine *Engine) executeStep(
+	ctx context.Context,
+	instance *WorkflowInstance,
+	step *WorkflowStep,
+	queueItem *QueueItem,
+) error {
 	// If workflow is in DLQ state, do not execute any steps until operator requeues
 	if instance.Status == StatusDLQ {
 		return nil
@@ -824,6 +1085,10 @@ func (engine *Engine) executeStep(ctx context.Context, instance *WorkflowInstanc
 		if err == nil && cancelReq != nil {
 			return engine.handleCancellation(ctx, instance, step, cancelReq)
 		}
+	}
+
+	if err := engine.ensureQueueItemLock(ctx, queueItem); err != nil {
+		return err
 	}
 
 	if stepErr != nil {
@@ -938,7 +1203,12 @@ func (engine *Engine) handleCancellation(
 	return nil
 }
 
-func (engine *Engine) executeCompensationStep(ctx context.Context, instance *WorkflowInstance, step *WorkflowStep) error {
+func (engine *Engine) executeCompensationStep(
+	ctx context.Context,
+	instance *WorkflowInstance,
+	step *WorkflowStep,
+	queueItem *QueueItem,
+) error {
 	def, err := engine.store.GetWorkflowDefinition(ctx, instance.WorkflowID)
 	if err != nil {
 		return fmt.Errorf("get workflow definition: %w", err)
@@ -989,6 +1259,9 @@ func (engine *Engine) executeCompensationStep(ctx context.Context, instance *Wor
 
 	// Execute the compensation handler
 	_, compensationErr := handler.Execute(ctx, &stepCtx, step.Input)
+	if err := engine.ensureQueueItemLock(ctx, queueItem); err != nil {
+		return err
+	}
 	if compensationErr != nil {
 		// Compensation failed, check if we can retry
 		if step.CompensationRetryCount < onFailureStep.MaxRetries {

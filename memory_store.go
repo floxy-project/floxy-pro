@@ -284,10 +284,14 @@ func (s *MemoryStore) DequeueStep(ctx context.Context, workerID string) (*QueueI
 	maxPriority := -1
 
 	for _, item := range s.queue {
-		if item.AttemptedAt != nil {
+		if item.AttemptedAt != nil && (item.LockedUntil == nil || !item.LockedUntil.Before(now)) {
 			continue
 		}
 		if item.ScheduledAt.After(now) {
+			continue
+		}
+		instance := s.instances[item.InstanceID]
+		if instance == nil {
 			continue
 		}
 
@@ -313,10 +317,72 @@ func (s *MemoryStore) DequeueStep(ctx context.Context, workerID string) (*QueueI
 
 	selectedItem.AttemptedAt = &now
 	selectedItem.AttemptedBy = &workerID
+	lockToken := uuid.NewString()
+	selectedItem.LockToken = &lockToken
+	if instance := s.instances[selectedItem.InstanceID]; instance != nil {
+		lockTimeout := defaultWorkflowLockTimeout
+		if def := s.definitions[instance.WorkflowID]; def != nil && def.Definition.WorkflowLockTimeout > 0 {
+			lockTimeout = def.Definition.WorkflowLockTimeout
+		}
+		lockedUntil := now.Add(lockTimeout)
+		selectedItem.LockedUntil = &lockedUntil
+		if instance.Status == StatusPending || instance.Status == StatusRunning {
+			instance.Status = StatusRunning
+		}
+		instance.UpdatedAt = now
+	}
 
 	result := *selectedItem
 
 	return &result, nil
+}
+
+func (s *MemoryStore) ExtendQueueItemLock(
+	ctx context.Context,
+	queueID int64,
+	lockToken string,
+	ttl time.Duration,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	item, exists := s.queue[queueID]
+	if !exists {
+		return false, nil
+	}
+	if item.LockToken == nil || *item.LockToken != lockToken {
+		return false, nil
+	}
+	now := time.Now()
+	if item.LockedUntil == nil || !item.LockedUntil.After(now) {
+		return false, nil
+	}
+	if ttl <= 0 {
+		ttl = defaultWorkflowLockTimeout
+	}
+
+	lockedUntil := now.Add(ttl)
+	item.LockedUntil = &lockedUntil
+
+	return true, nil
+}
+
+func (s *MemoryStore) QueueItemLockStillOwned(ctx context.Context, queueID int64, lockToken string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	item, exists := s.queue[queueID]
+	if !exists {
+		return false, nil
+	}
+	if item.LockToken == nil || *item.LockToken != lockToken {
+		return false, nil
+	}
+	if item.LockedUntil == nil || !item.LockedUntil.After(time.Now()) {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 func (s *MemoryStore) RemoveFromQueue(ctx context.Context, queueID int64) error {
@@ -339,6 +405,8 @@ func (s *MemoryStore) ReleaseQueueItem(ctx context.Context, queueID int64) error
 
 	item.AttemptedAt = nil
 	item.AttemptedBy = nil
+	item.LockedUntil = nil
+	item.LockToken = nil
 
 	return nil
 }
@@ -361,6 +429,8 @@ func (s *MemoryStore) RescheduleAndReleaseQueueItem(ctx context.Context, queueID
 	item.ScheduledAt = newScheduledAt
 	item.AttemptedAt = nil
 	item.AttemptedBy = nil
+	item.LockedUntil = nil
+	item.LockToken = nil
 
 	return nil
 }

@@ -95,9 +95,10 @@ type WorkflowDefinition struct {
 }
 
 type GraphDefinition struct {
-	Steps      map[string]*StepDefinition `json:"steps"`
-	Start      string                     `json:"start"`
-	DLQEnabled bool                       `json:"dlq_enabled"`
+	Steps               map[string]*StepDefinition `json:"steps"`
+	Start               string                     `json:"start"`
+	DLQEnabled          bool                       `json:"dlq_enabled"`
+	WorkflowLockTimeout time.Duration              `json:"workflow_lock_timeout,omitempty"`
 }
 
 type StepDefinition struct {
@@ -159,6 +160,8 @@ type QueueItem struct {
 	ScheduledAt time.Time  `json:"scheduled_at"`
 	AttemptedAt *time.Time `json:"attempted_at"`
 	AttemptedBy *string    `json:"attempted_by"`
+	LockedUntil *time.Time `json:"locked_until,omitempty"`
+	LockToken   *string    `json:"lock_token,omitempty"`
 	Priority    int        `json:"priority"`
 }
 
