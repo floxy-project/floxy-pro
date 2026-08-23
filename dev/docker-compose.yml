@@ -104,7 +104,7 @@ services:
       - "4318:4318"
       - "14268:14268"
     depends_on:
-      - floxy-pg
+      - floxy-pro-pg
 
 volumes:
   floxy_pro_pg:
