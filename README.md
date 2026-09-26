@@ -43,6 +43,7 @@ Floxy is under active development, and its APIs and behavior may evolve between 
 - [Integration Tests](#integration-tests)
 - [Database Migrations](#database-migrations)
 - [Dead Letter Queue](#dead-letter-queue-dlq)
+- [Partial Success](#partial-success)
 - [Known Issues](#known-issues)
   - [Condition Steps in Forked Branches](#condition-steps-in-forked-branches)
   - [Rollback for nested Fork/Join branches](#rollback-for-nested-fork-/-join-branches)
@@ -62,6 +63,7 @@ Floxy is under active development, and its APIs and behavior may evolve between 
 - **Human-in-the-loop**: Interactive workflow steps that pause execution for human decisions
 - **Cancel\Abort**: Possibility to cancel workflow with rollback to the root step and immediate abort workflow
 - **Dead Letter Queue (DLQ)**: Two modes for error handling - Classic Saga with rollback/compensation or DLQ Mode with paused workflow and manual recovery
+- **Partial Success**: Opt-in failure policy for batch processing - failed parallel branches don't stop siblings or trigger rollback, workflow finishes as `completed_with_errors`
 - **Distributed Mode**: Microservices can register only their handlers; steps without local handlers are returned to queue for other services to process
 - **Priority Aging**: Prevents queue starvation by gradually increasing step priority as waiting time increases
 - **PostgreSQL Storage**: Persistent workflow state and event logging
@@ -507,16 +509,16 @@ if err := floxy.RunMigrations(ctx, pool); err != nil {
 
 The Pro version uses partitioned tables managed by `pg_partman`. The migrations are located in `migrations_pro/`:
 
-- `001_initial.up.sql`: Initial schema with partitioned tables (`workflow_instances`, `workflow_steps`, `workflow_events`, `workflow_dlq`) using `pg_partman`
-- `002_add_savepoint_and_rollback.up.sql`: SavePoint and rollback support
-- `003_add_compensation_retry_count.up.sql`: Compensation step status and compensation_retry_count added
-- `004_add_compensation_to_views.up.sql`: Active workflows view updated
-- `005_add_idempotency_key_to_steps.up.sql`: Idempotency Key added to step table
-- `006_add_human_in_the_loop_step.up.sql`: Human-in-the-loop step support and decision tracking
-- `007_add_workflow_cancel_requests_table.up.sql`: Cancel requests table
-- `008_add_dead_letter_queue.up.sql`: Dead Letter Queue for failed steps
-- `009_add_dlq_and_paused_statuses.up.sql`: DLQ and paused statuses support
-- `010_add_cleanup_function.up.sql`: Cleanup function for partitioned tables
+- `001_initial.up.sql`: Initial schema with partitioned tables (`workflow_instances`, `workflow_steps`, `workflow_events`, `workflow_dlq`, `workflow_join_state`) using `pg_partman`
+- `002_indexes.up.sql`: Additional indexes
+- `003_add_tables.up.sql`: Non-partitioned tables (`workflow_human_decisions`, `workflow_queue`, `workflow_cancel_requests`) and views
+- `004_cleanup_func.up.sql`: Cleanup procedure for partitioned tables (`pg_partman` maintenance)
+- `005_update_updated_at_func.up.sql`: `updated_at` trigger function
+- `006_add_unique_index_join_state.up.sql`: Composite index for join state lookups
+- `007`-`010`: Empty (version alignment with the base project)
+- `011_add_workflow_queue_lock.up.sql`: Queue item lease (`locked_until`)
+- `012_add_workflow_queue_lock_token.up.sql`: Queue item lease owner token (`lock_token`)
+- `013_add_completed_with_errors_status.up.sql`: `completed_with_errors` workflow status (partial success)
 
 **Note**: The Pro version requires the `pg_partman` extension to be installed in PostgreSQL. The extension is automatically created in the `partman` schema during migration.
 
@@ -616,6 +618,40 @@ err = engine.RequeueFromDLQ(ctx, dlqID, &newInput)
 
 // Workflow resumes from where it paused
 ```
+
+## Partial Success
+
+### Overview
+
+By default floxy uses saga semantics: a failed step (after retries are exhausted) stops parallel siblings and triggers rollback/compensation. For batch processing, where parallel branches are independent and successful results are valuable on their own, use the partial success failure policy:
+
+```go
+workflow, err := floxy.NewBuilder("batch-job", 1,
+    floxy.WithFailurePolicy(floxy.FailurePolicyPartialSuccess),
+).
+    Fork("process-items",
+        func(b *floxy.Builder) { b.Step("item1", "handler") },
+        func(b *floxy.Builder) { b.Step("item2", "handler") },
+        func(b *floxy.Builder) { b.Step("item3", "handler") },
+    ).
+    Join("collect", floxy.JoinStrategyAll).
+    Then("report", "report-handler").
+    Build()
+```
+
+Available policies: `FailurePolicySaga` (default) and `FailurePolicyPartialSuccess`.
+
+### Behavior
+
+When a step fails after all retries:
+
+- **Inside a Fork branch**: the step is marked `failed`, the rest of its branch is not executed, the Join is notified about the failed branch, neighboring branches keep running. No rollback or compensation is performed.
+- **Join step**: does not fail when some branches failed. Its output contains `outputs` of successful branches, `failed` with names of failed steps and `status: "completed_with_errors"`. Execution continues with the steps after the Join.
+- **Outside of Fork branches**: the workflow can not continue, so it is marked `failed`, but without rollback/compensation of already completed steps.
+
+When the workflow reaches its end and some steps failed, it finishes with the `completed_with_errors` status and the instance error lists the failed steps (e.g. `failed steps: item2`). If there were no failures, the status is `completed`.
+
+`FailurePolicyPartialSuccess` can not be combined with `WithDLQEnabled(true)`.
 
 ## Known Issues
 
