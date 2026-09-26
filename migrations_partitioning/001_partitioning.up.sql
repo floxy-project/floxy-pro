@@ -12,7 +12,7 @@ CREATE TABLE workflows.workflow_instances_p
 (
     id           BIGSERIAL,
     workflow_id  TEXT NOT NULL REFERENCES workflows.workflow_definitions(id),
-    status       TEXT NOT NULL CHECK (status IN ('pending','running','completed','failed','rolling_back','cancelled','cancelling','aborted','dlq')),
+    status       TEXT NOT NULL CHECK (status IN ('pending','running','completed','completed_with_errors','failed','rolling_back','cancelled','cancelling','aborted','dlq')),
     input        JSONB,
     output       JSONB,
     error        TEXT,

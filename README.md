@@ -509,16 +509,16 @@ if err := floxy.RunMigrations(ctx, pool); err != nil {
 
 The Pro version uses partitioned tables managed by `pg_partman`. The migrations are located in `migrations_pro/`:
 
-- `001_initial.up.sql`: Initial schema with partitioned tables (`workflow_instances`, `workflow_steps`, `workflow_events`, `workflow_dlq`) using `pg_partman`
-- `002_add_savepoint_and_rollback.up.sql`: SavePoint and rollback support
-- `003_add_compensation_retry_count.up.sql`: Compensation step status and compensation_retry_count added
-- `004_add_compensation_to_views.up.sql`: Active workflows view updated
-- `005_add_idempotency_key_to_steps.up.sql`: Idempotency Key added to step table
-- `006_add_human_in_the_loop_step.up.sql`: Human-in-the-loop step support and decision tracking
-- `007_add_workflow_cancel_requests_table.up.sql`: Cancel requests table
-- `008_add_dead_letter_queue.up.sql`: Dead Letter Queue for failed steps
-- `009_add_dlq_and_paused_statuses.up.sql`: DLQ and paused statuses support
-- `010_add_cleanup_function.up.sql`: Cleanup function for partitioned tables
+- `001_initial.up.sql`: Initial schema with partitioned tables (`workflow_instances`, `workflow_steps`, `workflow_events`, `workflow_dlq`, `workflow_join_state`) using `pg_partman`
+- `002_indexes.up.sql`: Additional indexes
+- `003_add_tables.up.sql`: Non-partitioned tables (`workflow_human_decisions`, `workflow_queue`, `workflow_cancel_requests`) and views
+- `004_cleanup_func.up.sql`: Cleanup procedure for partitioned tables (`pg_partman` maintenance)
+- `005_update_updated_at_func.up.sql`: `updated_at` trigger function
+- `006_add_unique_index_join_state.up.sql`: Composite index for join state lookups
+- `007`-`010`: Empty (version alignment with the base project)
+- `011_add_workflow_queue_lock.up.sql`: Queue item lease (`locked_until`)
+- `012_add_workflow_queue_lock_token.up.sql`: Queue item lease owner token (`lock_token`)
+- `013_add_completed_with_errors_status.up.sql`: `completed_with_errors` workflow status (partial success)
 
 **Note**: The Pro version requires the `pg_partman` extension to be installed in PostgreSQL. The extension is automatically created in the `partman` schema during migration.
 
